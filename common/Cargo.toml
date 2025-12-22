@@ -1,0 +1,10 @@
+[package]
+name = "rust-web-common"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+sqlx = { workspace = true, features = ["sqlite", "postgres", "any"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }

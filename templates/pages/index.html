@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+
+{% block title %}Home - Rust Web Template{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Hero Section -->
+    <div class="text-center">
+        <h1 class="text-4xl font-bold text-gray-900 mb-4">
+            Rust Web Template
+        </h1>
+        <p class="text-lg text-gray-600 max-w-2xl mx-auto">
+            A clean template demonstrating HTMX interactions, partial rendering, and user data storage.
+        </p>
+    </div>
+
+    <!-- Example 1: Full Page Refresh -->
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h2 class="text-2xl font-semibold text-gray-900 mb-4">Example 1: Full Page Refresh</h2>
+        <p class="text-gray-600 mb-4">
+            This example demonstrates a full page refresh using HTMX. Click the button to see the entire page update.
+        </p>
+        <button
+            hx-get="/api/example/refresh"
+            hx-target="body"
+            hx-swap="outerHTML"
+            class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+            Refresh Page
+        </button>
+    </div>
+
+    <!-- Example 2: Partial Rendering -->
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h2 class="text-2xl font-semibold text-gray-900 mb-4">Example 2: Partial Rendering</h2>
+        <p class="text-gray-600 mb-4">
+            This example demonstrates partial content updates without refreshing the entire page.
+        </p>
+        <div class="space-y-4">
+            <button
+                id="partial-btn"
+                hx-get="/api/example/partial?counter=0"
+                hx-target="#partial-content"
+                hx-swap="innerHTML"
+                class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+            >
+                Load Partial Content
+            </button>
+            <div id="partial-content" class="p-4 bg-gray-50 rounded-lg border border-gray-200 min-h-[100px]">
+                <p class="text-gray-500">Click the button above to load content</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Data Storage Example -->
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
+        <h2 class="text-2xl font-semibold text-gray-900 mb-4">User Data Storage</h2>
+        <p class="text-gray-600 mb-4">
+            Store and retrieve user-specific data using the simple storage API.
+        </p>
+        <div class="space-y-4">
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Key</label>
+                    <input 
+                        type="text" 
+                        id="data-key"
+                        placeholder="e.g., favorite_color"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Value</label>
+                    <input 
+                        type="text" 
+                        id="data-value"
+                        placeholder="e.g., blue"
+                        class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                </div>
+            </div>
+            <form
+                hx-post="/api/user-data"
+                hx-target="#storage-result"
+                hx-swap="innerHTML"
+                class="inline"
+            >
+                <input type="hidden" name="key" id="form-key">
+                <input type="hidden" name="value" id="form-value">
+                <button
+                    type="submit"
+                    onclick="document.getElementById('form-key').value = document.getElementById('data-key').value; document.getElementById('form-value').value = document.getElementById('data-value').value;"
+                    class="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+                >
+                    Save Data
+                </button>
+            </form>
+            <button
+                hx-get="/api/user-data"
+                hx-target="#storage-result"
+                hx-swap="innerHTML"
+                class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors ml-2"
+            >
+                Load Data
+            </button>
+            <div id="storage-result" class="p-4 bg-gray-50 rounded-lg border border-gray-200 min-h-[50px]">
+                <p class="text-gray-500 text-sm">Results will appear here</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // Update partial button to increment counter
+    let counter = 0;
+    document.getElementById('partial-btn')?.addEventListener('click', function() {
+        counter++;
+        this.setAttribute('hx-get', `/api/example/partial?counter=${counter}`);
+    });
+</script>
+{% endblock %}

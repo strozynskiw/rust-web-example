@@ -1,0 +1,37 @@
+# Rust build artifacts (except the release binary we need)
+target/debug/
+target/flycheck0/
+target/CACHEDIR.TAG
+target/**/*.d
+target/**/*.rlib
+target/**/deps/
+target/**/build/
+target/**/examples/
+target/**/incremental/
+
+# Source code (not needed since we're copying the compiled binary)
+server/src/
+common/src/
+# Documentation
+*.md
+README*
+
+# Docker files
+docker/
+docker-compose.yml
+Dockerfile
+
+# Git files
+.git/
+.gitignore
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Public folder if not needed
+public/
+

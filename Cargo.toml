@@ -1,0 +1,11 @@
+[workspace]
+members = ["server", "common"]
+resolver = "2"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-native-tls", "sqlite", "postgres", "any", "migrate", "chrono", "uuid"] }
+dotenv = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
