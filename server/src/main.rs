@@ -1,4 +1,4 @@
-//! Rust Web
+//! web-template
 //!
 //! A web application built with:
 //! - Axum for HTTP handling
@@ -11,7 +11,7 @@ use axum::http::HeaderValue;
 use axum::{
     Router,
     extract::{Extension, Request},
-    middleware::{self, Next},
+    middleware::Next,
     response::Response,
     routing::{get, post},
 };
@@ -23,12 +23,15 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::info;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
-use rust_web_common::db;
+use web_template_common::db;
 
+mod admin;
 mod api;
+mod auth;
+mod auth_handlers;
+mod middlewares;
 mod site;
 mod storage;
 
@@ -45,7 +48,7 @@ pub struct User {
 }
 
 /// Shared database connection pool (supports both SQLite and PostgreSQL).
-pub type SharedClient = rust_web_common::db::DatabasePool;
+pub type SharedClient = web_template_common::db::DatabasePool;
 
 /// Thread-safe shared Tera template engine with hot-reloading support.
 pub type SharedTera = Arc<RwLock<Tera>>;
@@ -53,25 +56,43 @@ pub type SharedTera = Arc<RwLock<Tera>>;
 /// Initialize the Tera template engine.
 async fn setup_tera() -> anyhow::Result<SharedTera> {
     let tera = Tera::new("templates/**/*")?;
-    info!(
-        template_count = tera.get_template_names().count(),
-        "Templates loaded"
-    );
+    let template_count = tera.get_template_names().count();
+    info!("   Found {} template(s)", template_count);
+    
     Ok(Arc::new(RwLock::new(tera)))
 }
 
 /// Initialize the database connection pool and run migrations.
 async fn setup_database() -> anyhow::Result<SharedClient> {
-    let database_url = std::env::var("DATABASE_URL")?;
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| {
+            tracing::warn!("DATABASE_URL not set, using default: sqlite:./data.db");
+            "sqlite:./data.db".to_string()
+        });
+    
+    // Determine database type
+    let db_type = if database_url.starts_with("sqlite") {
+        "SQLite"
+    } else if database_url.starts_with("postgres") {
+        "PostgreSQL"
+    } else {
+        "Unknown"
+    };
+    
+    info!("   Database type: {}", db_type);
     let pool = db::create_pool(&database_url).await?;
+    info!("   Connection pool created");
 
     // Run migrations based on database type
+    info!("   Running migrations...");
     match &pool {
-        rust_web_common::db::DatabasePool::Sqlite(sqlite_pool) => {
+        web_template_common::db::DatabasePool::Sqlite(sqlite_pool) => {
             sqlx::migrate!("./migrations").run(sqlite_pool).await?;
+            info!("   SQLite migrations applied");
         }
-        rust_web_common::db::DatabasePool::Postgres(postgres_pool) => {
+        web_template_common::db::DatabasePool::Postgres(postgres_pool) => {
             sqlx::migrate!("./migrations").run(postgres_pool).await?;
+            info!("   PostgreSQL migrations applied");
         }
     }
 
@@ -80,25 +101,63 @@ async fn setup_database() -> anyhow::Result<SharedClient> {
 
 /// Initialize the tracing subscriber for structured logging.
 fn setup_tracing() {
-    tracing_subscriber::registry()
-        .with(
+    tracing_subscriber::fmt()
+        .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rust_web=debug,tower_http=debug".into()),
+                .unwrap_or_else(|_| "web_template=info,tower_http=info".into()),
         )
-        .with(tracing_subscriber::fmt::layer())
+        .with_target(false)
+        .with_level(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
         .init();
 }
 
 /// Build the application router with all routes and middleware.
 fn build_router(tera: SharedTera, db: SharedClient) -> Router {
-    Router::new()
-        // Page routes
-        .route("/", get(site::index))
-        // API routes for HTMX
+    // Public routes (no authentication required, but check if user is logged in)
+    let public_routes = Router::new()
+        .route("/", get(site::index_public))
+        .route("/login", get(auth_handlers::login_page))
+        .route("/register", get(auth_handlers::register_page))
+        // Add optional auth middleware to inject user if logged in
+        .layer(axum::middleware::from_fn(middlewares::optional_auth));
+    
+    // Auth action routes (login/logout/register actions)
+    let auth_action_routes = Router::new()
+        .route("/login", post(auth_handlers::login))
+        .route("/register", post(auth_handlers::register))
+        .route("/logout", get(auth_handlers::logout));
+    
+    // HTMX example routes
+    let example_routes = Router::new()
         .route("/api/example/refresh", get(api::example_refresh))
-        .route("/api/example/partial", get(api::example_partial))
+        .route("/api/example/partial", get(api::example_partial));
+
+    // Protected user routes (authentication required)
+    let user_routes = Router::new()
+        .route("/profile", get(site::user_profile))
+        .route("/dashboard", get(site::user_profile))
         .route("/api/user-data", get(api::get_user_data))
         .route("/api/user-data", post(api::save_user_data))
+        .layer(axum::middleware::from_fn(middlewares::require_auth));
+
+    // Admin routes (authentication + admin role required)
+    let admin_routes = Router::new()
+        .route("/admin", get(admin::admin_dashboard))
+        .route("/admin/users/role", post(admin::update_user_role))
+        .route("/admin/users/status", post(admin::toggle_user_status))
+        .layer(axum::middleware::from_fn(middlewares::require_admin))
+        .layer(axum::middleware::from_fn(middlewares::require_auth));
+
+    Router::new()
+        .merge(public_routes)
+        .merge(auth_action_routes)
+        .merge(example_routes)
+        .merge(user_routes)
+        .merge(admin_routes)
         // Static files with cache headers
         .nest_service(
             "/static",
@@ -111,28 +170,44 @@ fn build_router(tera: SharedTera, db: SharedClient) -> Router {
         )
         // Fallback for 404
         .fallback(site::not_found)
-        // Middleware
-        .layer(middleware::from_fn(tera_reload_middleware))
+        // Global middleware
+        .layer(axum::middleware::from_fn(tera_reload_middleware))
         .layer(Extension(tera))
         .layer(Extension(db))
-        .layer(middleware::from_fn(user_identity_middleware))
+        .layer(axum::middleware::from_fn(user_identity_middleware))
         .layer(CookieManagerLayer::new())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Load environment variables
+    // Load environment variables first
     dotenv::dotenv().ok();
 
-    // Initialize logging
+    // Initialize logging early
     setup_tracing();
 
-    info!("Starting server initialization");
+    // Startup banner
+    info!("");
+    info!("🚀 Web Template Server Starting...");
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let tera = setup_tera().await?;
+    // Database setup
+    info!("📦 Setting up database connection...");
     let db = setup_database().await?;
+    info!("✅ Database connected and migrations applied");
+    info!("");
 
+    // Template engine setup
+    info!("📄 Loading templates...");
+    let tera = setup_tera().await?;
+    info!("✅ Templates loaded successfully");
+    info!("");
+
+    // Router setup
+    info!("🔧 Building application routes...");
     let app = build_router(tera, db);
+    info!("✅ Routes configured");
+    info!("");
 
     // Start the server
     let port = std::env::var("PORT")
@@ -140,8 +215,19 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(DEFAULT_SERVER_PORT);
     let addr = format!("0.0.0.0:{}", port);
+    
+    info!("🌐 Starting HTTP server...");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    info!(address = %addr, "Server listening");
+    
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("✨ Server ready and listening on {}", addr);
+    info!("📍 Access the application at:");
+    info!("   • Home: http://localhost:{}", port);
+    info!("   • Login: http://localhost:{}/login", port);
+    info!("   • Register: http://localhost:{}/register", port);
+    info!("   • Admin: http://localhost:{}/admin", port);
+    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    info!("");
 
     axum::serve(listener, app).await?;
 

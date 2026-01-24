@@ -7,8 +7,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/service
-COPY target/release/rust-web .
+COPY target/release/web-template .
 COPY static static
 COPY templates templates
 
-CMD ["./rust-web"]
+CMD ["./web-template"]

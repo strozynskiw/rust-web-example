@@ -37,7 +37,7 @@ docker-compose up -d
 
 Edit `.env` and change:
 ```
-DATABASE_URL=postgresql://rustweb:rustweb@localhost:5432/rustweb
+DATABASE_URL=postgresql://web-template:web-template@localhost:5432/web-template
 ```
 
 ### Run Server
@@ -73,7 +73,7 @@ ports:
 
 And update `.env`:
 ```
-DATABASE_URL=postgresql://rustweb:rustweb@localhost:5433/rustweb
+DATABASE_URL=postgresql://web-template:web-template@localhost:5433/web-template
 ```
 
 ### Migration Errors

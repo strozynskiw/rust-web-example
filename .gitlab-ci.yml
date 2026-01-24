@@ -1,0 +1,94 @@
+# This file is a template, and might need editing before it works on your project.
+# You can copy and paste this template into a new `.gitlab-ci.yml` file.
+# You should not add this template to an existing `.gitlab-ci.yml` file by using the `include:` keyword.
+#
+# To contribute improvements to CI/CD templates, please follow the Development guide at:
+# https://docs.gitlab.com/ee/development/cicd/templates.html
+# This specific template is located at:
+# https://gitlab.com/gitlab-org/gitlab/-/blob/master/lib/gitlab/ci/templates/Rust.gitlab-ci.yml
+
+# Official language image. Look for the different tagged releases at:
+# https://hub.docker.com/r/library/rust/tags/
+
+stages:
+  - build
+  - build-image
+  - deploy-stg
+  - deploy-prod
+
+build:
+  stage: build
+  image: rust:1.92-bookworm
+  variables:
+    DATABASE_URL: $DATABASE_URL_STG
+  artifacts:
+     paths:
+       - target/
+     expire_in: 1 week
+  script:
+    - apt update -yqq
+    - apt install -yqq --no-install-recommends build-essential libssl-dev
+    - cargo build --release
+    - cargo test --release
+
+build-image:
+  stage: build-image
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker login -u gitlab-ci-token -p $CI_ACCESS_TOKEN registry.gitlab.com
+    - docker build -t registry.gitlab.com/strozynski/web-template .
+    - docker push registry.gitlab.com/strozynski/web-template:latest
+  only:
+    - master
+
+deploy-stg:
+  stage: deploy-stg
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - 'command -v ssh-agent >/dev/null || ( apt-get update -y && apt-get install openssh-client -y )'
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - env RUST_LOG="${RUST_LOG}"
+  script:
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker login -u gitlab-ci-token -p $CI_ACCESS_TOKEN registry.gitlab.com"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker stop web-template-stg || true"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker rm web-template-stg || true"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker pull registry.gitlab.com/strozynski/web-template:latest"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker run --network proxy_default -e DATABASE_URL=$DATABASE_URL_STG -e RUST_LOG=$RUST_LOG_STG --name web-template-stg -d --restart always registry.gitlab.com/strozynski/web-template:latest"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker network connect web-template-db_web-template-network web-template-stg || true"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker logout registry.gitlab.com"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker restart web-template-stg"
+  only:
+    - master
+
+
+deploy-prod:
+  stage: deploy-prod
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - 'command -v ssh-agent >/dev/null || ( apt-get update -y && apt-get install openssh-client -y )'
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - env RUST_LOG="${RUST_LOG}"
+  script:
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker login -u gitlab-ci-token -p $CI_ACCESS_TOKEN registry.gitlab.com"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker stop web-template-prod || true"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker rm web-template-prod || true"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker pull registry.gitlab.com/strozynski/web-template:latest"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker run --network proxy_default -e DATABASE_URL=$DATABASE_URL_PROD -e RUST_LOG=$RUST_LOG_PROD --name web-template-prod -d --restart always registry.gitlab.com/strozynski/web-template:latest"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker network connect web-template-db_web-template-network web-template-prod || true"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker logout registry.gitlab.com"
+    - ssh -oStrictHostKeyChecking=no -p22 $USER@$IP_ADDR "docker restart web-template-prod"
+  only:
+    - master
+  when: manual

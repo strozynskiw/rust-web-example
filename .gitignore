@@ -1,28 +1,32 @@
 # Rust
 /target/
 **/*.rs.bk
+*.pdb
 Cargo.lock
 
-# SQLite database
+# Database
 *.db
 *.db-shm
 *.db-wal
-data.db
 
 # Environment
 .env
 .env.local
 
 # IDE
-.idea/
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
-Thumbs.db
 
 # Logs
 *.log
+
+# Build artifacts
+/dist/
+/build/
+
+# SQLx
+.sqlx/

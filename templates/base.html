@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="X-UA-Compatible" content="ie=edge">
-    <title>{% block title %}Rust Web Template{% endblock %}</title>
+    <title>{% block title %}web-template{% endblock %}</title>
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -36,11 +36,35 @@
             <div class="flex justify-between items-center h-16">
                 <div class="flex items-center">
                     <a href="/" class="text-xl font-bold text-gray-900">
-                        Rust Web Template
+                        web-template
                     </a>
                 </div>
-                <div class="flex items-center space-x-4">
-                    <span class="text-sm text-gray-500">HTMX + Tailwind</span>
+                <div class="flex items-center space-x-3">
+                    {% if user %}
+                        <!-- Logged in user menu -->
+                        <span class="text-sm text-gray-600">
+                            Hello, <strong>{{ user.username }}</strong>
+                        </span>
+                        <a href="/profile" class="px-3 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors">
+                            👤 Profile
+                        </a>
+                        {% if user.role == "admin" %}
+                        <a href="/admin" class="px-3 py-2 text-sm font-medium text-purple-700 bg-purple-100 rounded-lg hover:bg-purple-200 transition-colors">
+                            🛡️ Admin
+                        </a>
+                        {% endif %}
+                        <a href="/logout" class="px-3 py-2 text-sm font-medium text-red-700 bg-red-100 rounded-lg hover:bg-red-200 transition-colors">
+                            Logout
+                        </a>
+                    {% else %}
+                        <!-- Guest menu -->
+                        <a href="/login" class="px-3 py-2 text-sm font-medium text-blue-700 bg-blue-100 rounded-lg hover:bg-blue-200 transition-colors">
+                            Login
+                        </a>
+                        <a href="/register" class="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors">
+                            Register
+                        </a>
+                    {% endif %}
                 </div>
             </div>
         </nav>
@@ -55,7 +79,7 @@
     <footer class="bg-white border-t border-gray-200 mt-auto">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             <div class="text-center text-sm text-gray-500">
-                <p>© 2025 Rust Web Template. Built with Axum, Tera, HTMX, and Tailwind CSS.</p>
+                <p>© 2025 web-template. Built with Axum, Tera, HTMX, and Tailwind CSS.</p>
             </div>
         </div>
     </footer>

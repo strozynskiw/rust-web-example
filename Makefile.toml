@@ -1,0 +1,295 @@
+[env]
+RUST_LOG = "debug,tower_http=debug"
+DATABASE_URL = "sqlite:./data.db"
+
+[config]
+default_to_workspace = false
+
+# ============================================
+# Development Tasks
+# ============================================
+
+[tasks.run]
+description = "Run the web server in development mode"
+command = "cargo"
+args = ["run", "--package", "web-template", "--bin", "web-template"]
+dependencies = ["check"]
+
+[tasks.dev]
+description = "Run the web server with debug logging"
+env = { "RUST_LOG" = "debug" }
+command = "cargo"
+args = ["run", "--package", "web-template", "--bin", "web-template"]
+
+[tasks.watch]
+description = "Run the server with auto-reload on file changes"
+command = "cargo"
+args = ["watch", "-x", "run --package web-template --bin web-template"]
+
+# ============================================
+# Build Tasks
+# ============================================
+
+[tasks.build]
+description = "Build the project in debug mode"
+command = "cargo"
+args = ["build"]
+
+[tasks.build-release]
+description = "Build optimized release binary"
+command = "cargo"
+args = ["build", "--release"]
+
+[tasks.check]
+description = "Fast type checking without full compilation"
+command = "cargo"
+args = ["check"]
+
+[tasks.clean]
+description = "Clean build artifacts"
+command = "cargo"
+args = ["clean"]
+
+# ============================================
+# Code Quality Tasks
+# ============================================
+
+[tasks.clippy]
+description = "Run clippy linter for code quality checks"
+command = "cargo"
+args = ["clippy", "--all-targets", "--", "-D", "warnings"]
+
+[tasks.fmt]
+description = "Format code with rustfmt"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.fmt-check]
+description = "Check code formatting without modifying files"
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.lint]
+description = "Run all linting tasks (clippy + fmt-check)"
+dependencies = ["clippy", "fmt-check"]
+
+# ============================================
+# Testing Tasks
+# ============================================
+
+[tasks.test]
+description = "Run all tests"
+command = "cargo"
+args = ["test"]
+
+[tasks.test-verbose]
+description = "Run tests with verbose output"
+command = "cargo"
+args = ["test", "--", "--nocapture"]
+
+# ============================================
+# Database Tasks
+# ============================================
+
+[tasks.migrate]
+description = "Run database migrations manually"
+command = "sqlx"
+args = ["migrate", "run"]
+cwd = "server"
+
+[tasks.migrate-revert]
+description = "Revert the last migration"
+command = "sqlx"
+args = ["migrate", "revert"]
+cwd = "server"
+
+[tasks.db-setup]
+description = "Start PostgreSQL database via docker-compose"
+command = "docker-compose"
+args = ["up", "-d"]
+
+[tasks.db-stop]
+description = "Stop PostgreSQL database"
+command = "docker-compose"
+args = ["down"]
+
+[tasks.db-reset]
+description = "Reset database (stop, remove volumes, start fresh)"
+command = "docker-compose"
+args = ["down", "-v"]
+
+[tasks.db-logs]
+description = "View database logs"
+command = "docker-compose"
+args = ["logs", "-f", "postgres"]
+
+[tasks.sqlx-prepare]
+description = "Prepare SQLx offline metadata for faster builds"
+script = [
+    "cd server",
+    "cargo sqlx prepare"
+]
+
+# ============================================
+# User Management Tasks
+# ============================================
+
+[tasks.create-admin]
+description = "Create an admin user. Usage: cargo make create-admin -- USERNAME EMAIL PASSWORD"
+command = "cargo"
+args = ["run", "--bin", "create_admin", "--"]
+# Note: Additional args are passed through: cargo make create-admin -- admin admin@example.com pass123
+
+[tasks.create-user]
+description = "Create a regular user. Usage: cargo make create-user -- USERNAME EMAIL PASSWORD"
+command = "cargo"
+args = ["run", "--bin", "create_admin", "--"]
+# Note: Add 'user' as the role: cargo make create-user -- john john@example.com pass123 user
+
+# ============================================
+# Docker Tasks
+# ============================================
+
+[tasks.docker-build]
+description = "Build Docker image"
+command = "docker"
+args = ["build", "-t", "web-template:latest", "."]
+dependencies = ["build-release"]
+
+[tasks.docker-run]
+description = "Run Docker container"
+command = "docker"
+args = [
+    "run",
+    "-p", "3000:3000",
+    "-e", "DATABASE_URL=${DATABASE_URL}",
+    "-e", "RUST_LOG=${RUST_LOG}",
+    "--name", "web-template",
+    "web-template:latest"
+]
+
+[tasks.docker-stop]
+description = "Stop and remove Docker container"
+command = "docker"
+args = ["rm", "-f", "web-template"]
+
+# ============================================
+# CI/CD Tasks
+# ============================================
+
+[tasks.ci]
+description = "Run all CI checks locally (format, clippy, test, build)"
+dependencies = ["fmt-check", "clippy", "test", "build"]
+
+[tasks.ci-full]
+description = "Run full CI suite including release build"
+dependencies = ["fmt-check", "clippy", "test", "build-release"]
+
+# ============================================
+# Utility Tasks
+# ============================================
+
+[tasks.update]
+description = "Update all dependencies"
+command = "cargo"
+args = ["update"]
+
+[tasks.outdated]
+description = "Check for outdated dependencies"
+command = "cargo"
+args = ["outdated"]
+
+[tasks.tree]
+description = "Display dependency tree"
+command = "cargo"
+args = ["tree"]
+
+[tasks.bloat]
+description = "Find what takes space in the executable"
+command = "cargo"
+args = ["bloat", "--release"]
+
+# ============================================
+# Combined Workflow Tasks
+# ============================================
+
+[tasks.setup]
+description = "Initial project setup (install sqlx-cli if needed)"
+script = [
+    "echo '🔧 Setting up project...'",
+    "command -v sqlx >/dev/null 2>&1 || cargo install sqlx-cli --no-default-features --features sqlite,postgres",
+    "echo '✅ Setup complete!'"
+]
+
+[tasks.fresh-start]
+description = "Clean everything and start fresh"
+dependencies = ["clean", "db-reset"]
+script = [
+    "rm -f data.db",
+    "echo '✅ All clean! Run \"cargo make run\" to start fresh.'"
+]
+
+[tasks.dev-server]
+description = "Start development server with database"
+dependencies = ["db-setup"]
+run_task = "run"
+
+# ============================================
+# Help Task
+# ============================================
+
+[tasks.default]
+alias = "help"
+
+[tasks.help]
+description = "Show available tasks"
+script = [
+    "echo '📋 Web Template - Available Tasks'",
+    "echo '=================================='",
+    "echo ''",
+    "echo '🚀 Development:'",
+    "echo '  run              - Run the server'",
+    "echo '  dev              - Run with debug logging'",
+    "echo '  watch            - Auto-reload on changes (requires cargo-watch)'",
+    "echo '  check            - Fast type checking'",
+    "echo ''",
+    "echo '🔨 Build:'",
+    "echo '  build            - Build debug'",
+    "echo '  build-release    - Build release'",
+    "echo '  clean            - Clean artifacts'",
+    "echo ''",
+    "echo '✅ Quality:'",
+    "echo '  clippy           - Run linter'",
+    "echo '  fmt              - Format code'",
+    "echo '  fmt-check        - Check formatting'",
+    "echo '  lint             - Run all linters'",
+    "echo '  test             - Run tests'",
+    "echo ''",
+    "echo '🗄️  Database:'",
+    "echo '  db-setup         - Start PostgreSQL'",
+    "echo '  db-stop          - Stop PostgreSQL'",
+    "echo '  db-reset         - Reset database'",
+    "echo '  db-logs          - View DB logs'",
+    "echo '  migrate          - Run migrations'",
+    "echo ''",
+    "echo '👤 Users:'",
+    "echo '  create-admin     - Create admin (usage: cargo make create-admin -- user email pass)'",
+    "echo '  create-user      - Create user (usage: cargo make create-user -- user email pass user)'",
+    "echo ''",
+    "echo '🐳 Docker:'",
+    "echo '  docker-build     - Build Docker image'",
+    "echo '  docker-run       - Run Docker container'",
+    "echo '  docker-stop      - Stop container'",
+    "echo ''",
+    "echo '🔄 CI/CD:'",
+    "echo '  ci               - Run local CI checks'",
+    "echo '  ci-full          - Run full CI suite'",
+    "echo ''",
+    "echo '🛠️  Utilities:'",
+    "echo '  setup            - Initial setup'",
+    "echo '  fresh-start      - Clean everything'",
+    "echo '  update           - Update dependencies'",
+    "echo '  outdated         - Check outdated deps'",
+    "echo '  tree             - Dependency tree'",
+    "echo ''",
+]

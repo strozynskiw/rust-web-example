@@ -3,17 +3,17 @@ version: '3.8'
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: rust-web-postgres
+    container_name: web-template-postgres
     environment:
-      POSTGRES_USER: rustweb
-      POSTGRES_PASSWORD: rustweb
-      POSTGRES_DB: rustweb
+      POSTGRES_USER: web-template
+      POSTGRES_PASSWORD: web-template
+      POSTGRES_DB: web-template
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rustweb"]
+      test: ["CMD-SHELL", "pg_isready -U web-template"]
       interval: 5s
       timeout: 5s
       retries: 5

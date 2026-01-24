@@ -5,27 +5,31 @@ use axum::{
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
+use serde_json::json;
 use tera::Context;
 use tracing::error;
 
-use crate::storage;
-use crate::{SharedClient, SharedTera, User};
+use crate::auth::User as AuthUser;
+use crate::SharedTera;
 
-/// Renders the home page.
-pub async fn index(
-    Extension(db): Extension<SharedClient>,
+/// Renders the home page (public version with optional auth user).
+pub async fn index_public(
     Extension(tera): Extension<SharedTera>,
-    Extension(user): Extension<User>,
+    user: Option<Extension<Option<AuthUser>>>,
 ) -> Response {
-    // Load user data if available
-    let user_data = storage::load_user_data(&db, &user.id)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| serde_json::json!({}));
-
     let mut ctx = Context::new();
-    ctx.insert("user_data", &user_data);
+    
+    // Add user to context if logged in
+    if let Some(Extension(Some(auth_user))) = user {
+        let user_view = json!({
+            "id": &auth_user.id,
+            "username": &auth_user.username,
+            "email": &auth_user.email,
+            "role": &auth_user.role,
+            "is_active": auth_user.is_active,
+        });
+        ctx.insert("user", &user_view);
+    }
 
     render_page(&tera, "pages/index.html", &ctx).await
 }
@@ -48,4 +52,26 @@ pub async fn not_found(Extension(tera): Extension<SharedTera>) -> Response {
         Ok(html) => (StatusCode::NOT_FOUND, Html(html)).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
     }
+}
+
+/// User profile page (requires authentication).
+pub async fn user_profile(
+    Extension(tera): Extension<SharedTera>,
+    Extension(user): Extension<AuthUser>,
+) -> Response {
+    // Create user view for template
+    let user_view = json!({
+        "id": &user.id,
+        "username": &user.username,
+        "email": &user.email,
+        "role": &user.role,
+        "is_active": user.is_active,
+        "created_at": user.created_at.format("%Y-%m-%d %H:%M:%S").to_string(),
+        "last_login_at": user.last_login_at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
+    });
+
+    let mut ctx = Context::new();
+    ctx.insert("user", &user_view);
+
+    render_page(&tera, "pages/profile.html", &ctx).await
 }

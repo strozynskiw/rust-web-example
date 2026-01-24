@@ -1,9 +1,9 @@
 //! Simple storage layer for user data.
 //! Works with both SQLite and PostgreSQL.
 
-use rust_web_common::db::DatabasePool;
 use serde_json::Value;
 use uuid::Uuid;
+use web_template_common::db::DatabasePool;
 
 /// Stores user data as JSON/JSONB in the database.
 pub async fn store_user_data(
@@ -74,9 +74,8 @@ pub async fn load_user_data(
 
     match result {
         Some(data_str) => {
-            let value: Value = serde_json::from_str(&data_str).map_err(|e| {
-                sqlx::Error::Protocol(format!("JSON deserialization error: {}", e))
-            })?;
+            let value: Value = serde_json::from_str(&data_str)
+                .map_err(|e| sqlx::Error::Protocol(format!("JSON deserialization error: {}", e)))?;
             Ok(Some(value))
         }
         None => Ok(None),

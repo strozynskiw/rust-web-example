@@ -1,4 +1,4 @@
-# Rust Web Template
+# web-template
 
 A clean, production-ready template for building web applications with Rust. This template demonstrates a modern server-side rendered (SSR) architecture using Rust's async ecosystem, combining powerful backend frameworks with lightweight frontend technologies for a fast, maintainable web application.
 
@@ -60,7 +60,7 @@ This template is built using a modular workspace structure with clear separation
 ## Structure
 
 ```
-rust-web/
+web-template/
 ├── server/          # Main application
 │   ├── src/
 │   │   ├── main.rs  # Server setup and routing
@@ -107,7 +107,7 @@ If you prefer PostgreSQL:
 
 2. **Update `.env`:**
    ```bash
-   DATABASE_URL=postgresql://rustweb:rustweb@localhost:5432/rustweb
+   DATABASE_URL=postgresql://web-template:web-template@localhost:5432/web-template
    ```
 
 3. **Start the server:**
@@ -161,12 +161,12 @@ docker-compose down -v
 
 1. Create a database:
    ```sql
-   CREATE DATABASE rustweb;
+   CREATE DATABASE "web-template";
    ```
 
 2. Update `.env` with your connection string:
    ```
-   DATABASE_URL=postgresql://user:password@localhost:5432/rustweb
+   DATABASE_URL=postgresql://user:password@localhost:5432/web-template
    ```
 
 **Connection string format:**
@@ -186,7 +186,7 @@ cd server
 DATABASE_URL=sqlite:./data.db cargo sqlx prepare
 
 # For PostgreSQL:
-DATABASE_URL=postgresql://rustweb:rustweb@localhost:5432/rustweb cargo sqlx prepare
+DATABASE_URL=postgresql://web-template:web-template@localhost:5432/web-template cargo sqlx prepare
 
 # Build without database connection
 cargo build
