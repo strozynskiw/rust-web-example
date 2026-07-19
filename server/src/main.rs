@@ -178,10 +178,10 @@ fn build_router(state: AppState) -> Router {
         // Fallback for 404
         .fallback(site::not_found)
         // Middleware
-        .layer(middleware::from_fn(tera_reload_middleware))
+        .layer(axum::middleware::from_fn(tera_reload_middleware))
         .layer(Extension(state.tera.clone()))
         .with_state(state)
-        .layer(middleware::from_fn(user_identity_middleware))
+        .layer(axum::middleware::from_fn(user_identity_middleware))
         .layer(CookieManagerLayer::new())
 }
 

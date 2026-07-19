@@ -10,7 +10,7 @@ use tera::Context;
 use tracing::error;
 
 use crate::auth::User as AuthUser;
-use crate::SharedTera;
+use crate::{AppState, SharedTera};
 
 /// Renders the home page (public version with optional auth user).
 pub async fn index_public(
@@ -31,7 +31,7 @@ pub async fn index_public(
         ctx.insert("user", &user_view);
     }
 
-    render_page(&state.tera, "pages/index.html", &ctx).await
+    render_page(&tera, "pages/index.html", &ctx).await
 }
 
 /// Helper to render a template with proper error handling.
