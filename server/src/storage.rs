@@ -2,13 +2,12 @@
 //! Works with both SQLite and PostgreSQL.
 
 use serde_json::Value;
-use uuid::Uuid;
 use web_template_common::db::DatabasePool;
 
 /// Stores user data as JSON/JSONB in the database.
 pub async fn store_user_data(
     db: &DatabasePool,
-    user_id: &Uuid,
+    user_id: &str,
     data: &Value,
 ) -> Result<(), sqlx::Error> {
     let data_str = serde_json::to_string(data)
@@ -55,7 +54,7 @@ pub async fn store_user_data(
 /// Loads user data from the database.
 pub async fn load_user_data(
     db: &DatabasePool,
-    user_id: &Uuid,
+    user_id: &str,
 ) -> Result<Option<Value>, sqlx::Error> {
     let result: Option<String> = match db {
         DatabasePool::Sqlite(pool) => {
@@ -86,7 +85,7 @@ pub async fn load_user_data(
 #[allow(dead_code)]
 pub async fn get_user_data_key(
     db: &DatabasePool,
-    user_id: &Uuid,
+    user_id: &str,
     key: &str,
 ) -> Result<Option<Value>, sqlx::Error> {
     let data = load_user_data(db, user_id).await?;
@@ -97,7 +96,7 @@ pub async fn get_user_data_key(
 /// Sets a specific key in user data.
 pub async fn set_user_data_key(
     db: &DatabasePool,
-    user_id: &Uuid,
+    user_id: &str,
     key: &str,
     value: &Value,
 ) -> Result<(), sqlx::Error> {

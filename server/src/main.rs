@@ -23,7 +23,6 @@ use tower_cookies::CookieManagerLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::info;
-use uuid::Uuid;
 
 use web_template_common::db;
 
@@ -35,17 +34,8 @@ mod middlewares;
 mod site;
 mod storage;
 
-/// Cookie name used to identify users across sessions.
-const USER_ID_COOKIE: &str = "user_id";
-
 /// Default server port.
 const DEFAULT_SERVER_PORT: u16 = 3000;
-
-/// Represents an authenticated user identified by a UUID.
-#[derive(Clone, Debug)]
-pub struct User {
-    pub id: Uuid,
-}
 
 /// Shared database connection pool (supports both SQLite and PostgreSQL).
 pub type SharedClient = web_template_common::db::DatabasePool;
@@ -179,9 +169,9 @@ fn build_router(state: AppState) -> Router {
         .fallback(site::not_found)
         // Middleware
         .layer(axum::middleware::from_fn(tera_reload_middleware))
+        .layer(Extension(state.db.clone()))
         .layer(Extension(state.tera.clone()))
         .with_state(state)
-        .layer(axum::middleware::from_fn(user_identity_middleware))
         .layer(CookieManagerLayer::new())
 }
 
@@ -244,37 +234,4 @@ async fn tera_reload_middleware(
         }
     }
     next.run(request).await
-}
-
-/// Ensures each user has a persistent UUID identifier.
-async fn user_identity_middleware(mut request: Request, next: Next) -> Response {
-    use tower_cookies::Cookies;
-
-    let cookies = request.extensions().get::<Cookies>().cloned();
-    if let Some(cookies) = cookies {
-        let id = get_or_create_user_id(&cookies);
-        request.extensions_mut().insert(User { id });
-    }
-    next.run(request).await
-}
-
-/// Retrieves an existing user ID from cookies or creates a new one.
-fn get_or_create_user_id(cookies: &tower_cookies::Cookies) -> Uuid {
-    use std::str::FromStr;
-    use tower_cookies::Cookie;
-
-    if let Some(cookie) = cookies.get(USER_ID_COOKIE)
-        && let Ok(id) = Uuid::from_str(cookie.value())
-    {
-        return id;
-    }
-
-    // Create new user ID and cookie
-    let id = Uuid::new_v4();
-    let cookie = Cookie::build((USER_ID_COOKIE.to_owned(), id.to_string()))
-        .permanent()
-        .path("/")
-        .build();
-    cookies.add(cookie);
-    id
 }

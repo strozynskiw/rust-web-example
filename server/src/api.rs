@@ -11,7 +11,8 @@ use tera::Context;
 use tracing::error;
 
 use crate::storage;
-use crate::{AppState, SharedTera, User};
+use crate::auth::User;
+use crate::{AppState, SharedTera};
 
 /// Example: Full page refresh endpoint
 pub async fn example_refresh(State(state): State<AppState>) -> Response {
