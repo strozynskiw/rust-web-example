@@ -2,7 +2,7 @@
 
 use axum::{
     Form,
-    extract::{Extension, Query},
+    extract::{Extension, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
@@ -11,21 +11,21 @@ use tera::Context;
 use tracing::error;
 
 use crate::storage;
-use crate::{SharedClient, SharedTera, User};
+use crate::{AppState, SharedTera, User};
 
 /// Example: Full page refresh endpoint
-pub async fn example_refresh(Extension(tera): Extension<SharedTera>) -> Response {
+pub async fn example_refresh(State(state): State<AppState>) -> Response {
     let mut ctx = Context::new();
     ctx.insert("timestamp", &chrono::Utc::now().to_rfc3339());
     ctx.insert("message", "This is a full page refresh example");
 
-    render_template(&tera, "partials/example_refresh.html", &ctx).await
+    render_template(&state.tera, "partials/example_refresh.html", &ctx).await
 }
 
 /// Example: Partial rendering endpoint
 pub async fn example_partial(
     Query(params): Query<ExampleParams>,
-    Extension(tera): Extension<SharedTera>,
+    State(state): State<AppState>,
 ) -> Response {
     let mut ctx = Context::new();
     ctx.insert("counter", &params.counter.unwrap_or(0));
@@ -34,7 +34,7 @@ pub async fn example_partial(
         "This content was loaded via HTMX partial rendering",
     );
 
-    render_template(&tera, "partials/example_partial.html", &ctx).await
+    render_template(&state.tera, "partials/example_partial.html", &ctx).await
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,10 +44,10 @@ pub struct ExampleParams {
 
 /// Get user data
 pub async fn get_user_data(
-    Extension(db): Extension<SharedClient>,
+    State(state): State<AppState>,
     Extension(user): Extension<User>,
 ) -> Response {
-    match storage::load_user_data(&db, &user.id).await {
+    match storage::load_user_data(&state.db, &user.id).await {
         Ok(Some(data)) => {
             let formatted =
                 serde_json::to_string_pretty(&data).unwrap_or_else(|_| "{}".to_string());
@@ -88,7 +88,7 @@ pub struct SaveDataForm {
 
 /// Save user data
 pub async fn save_user_data(
-    Extension(db): Extension<SharedClient>,
+    State(state): State<AppState>,
     Extension(user): Extension<User>,
     Form(form): Form<SaveDataForm>,
 ) -> Response {
@@ -98,7 +98,7 @@ pub async fn save_user_data(
         Err(_) => serde_json::Value::String(value_str.clone()),
     };
 
-    match storage::set_user_data_key(&db, &user.id, &form.key, &value).await {
+    match storage::set_user_data_key(&state.db, &user.id, &form.key, &value).await {
         Ok(_) => {
             let response = format!(
                 r#"<div class="p-4 bg-green-50 border border-green-200 rounded-lg">

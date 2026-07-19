@@ -3,7 +3,7 @@
 //! A web application built with:
 //! - Axum for HTTP handling
 //! - Tera for templating
-//! - PostgreSQL for storage
+//! - SQLite/PostgreSQL for storage (SQLite by default)
 //! - HTMX for dynamic interactions
 //! - Tailwind CSS for styling
 
@@ -53,12 +53,19 @@ pub type SharedClient = web_template_common::db::DatabasePool;
 /// Thread-safe shared Tera template engine with hot-reloading support.
 pub type SharedTera = Arc<RwLock<Tera>>;
 
+/// Application state shared across all handlers.
+#[derive(Clone)]
+pub struct AppState {
+    pub tera: SharedTera,
+    pub db: SharedClient,
+}
+
 /// Initialize the Tera template engine.
-async fn setup_tera() -> anyhow::Result<SharedTera> {
-    let tera = Tera::new("templates/**/*")?;
+fn setup_tera() -> anyhow::Result<SharedTera> {
+    let mut tera = Tera::default();
+    tera.load_from_glob("templates/**/*")?;
     let template_count = tera.get_template_names().count();
     info!("   Found {} template(s)", template_count);
-    
     Ok(Arc::new(RwLock::new(tera)))
 }
 
@@ -116,7 +123,7 @@ fn setup_tracing() {
 }
 
 /// Build the application router with all routes and middleware.
-fn build_router(tera: SharedTera, db: SharedClient) -> Router {
+fn build_router(state: AppState) -> Router {
     // Public routes (no authentication required, but check if user is logged in)
     let public_routes = Router::new()
         .route("/", get(site::index_public))
@@ -170,11 +177,11 @@ fn build_router(tera: SharedTera, db: SharedClient) -> Router {
         )
         // Fallback for 404
         .fallback(site::not_found)
-        // Global middleware
-        .layer(axum::middleware::from_fn(tera_reload_middleware))
-        .layer(Extension(tera))
-        .layer(Extension(db))
-        .layer(axum::middleware::from_fn(user_identity_middleware))
+        // Middleware
+        .layer(middleware::from_fn(tera_reload_middleware))
+        .layer(Extension(state.tera.clone()))
+        .with_state(state)
+        .layer(middleware::from_fn(user_identity_middleware))
         .layer(CookieManagerLayer::new())
 }
 
@@ -191,23 +198,11 @@ async fn main() -> anyhow::Result<()> {
     info!("🚀 Web Template Server Starting...");
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    // Database setup
-    info!("📦 Setting up database connection...");
+    let tera = setup_tera()?;
     let db = setup_database().await?;
-    info!("✅ Database connected and migrations applied");
-    info!("");
+    let state = AppState { tera, db };
 
-    // Template engine setup
-    info!("📄 Loading templates...");
-    let tera = setup_tera().await?;
-    info!("✅ Templates loaded successfully");
-    info!("");
-
-    // Router setup
-    info!("🔧 Building application routes...");
-    let app = build_router(tera, db);
-    info!("✅ Routes configured");
-    info!("");
+    let app = build_router(state);
 
     // Start the server
     let port = std::env::var("PORT")
@@ -243,14 +238,15 @@ async fn tera_reload_middleware(
 ) -> Response {
     #[cfg(debug_assertions)]
     {
-        if let Err(e) = tera.write().await.full_reload() {
+        let mut t = tera.write().await;
+        if let Err(e) = t.full_reload() {
             tracing::warn!(error = %e, "Failed to reload templates");
         }
     }
     next.run(request).await
 }
 
-/// Middleware that ensures each user has a persistent UUID identifier.
+/// Ensures each user has a persistent UUID identifier.
 async fn user_identity_middleware(mut request: Request, next: Next) -> Response {
     use tower_cookies::Cookies;
 
@@ -268,9 +264,10 @@ fn get_or_create_user_id(cookies: &tower_cookies::Cookies) -> Uuid {
     use tower_cookies::Cookie;
 
     if let Some(cookie) = cookies.get(USER_ID_COOKIE)
-        && let Ok(id) = Uuid::from_str(cookie.value()) {
-            return id;
-        }
+        && let Ok(id) = Uuid::from_str(cookie.value())
+    {
+        return id;
+    }
 
     // Create new user ID and cookie
     let id = Uuid::new_v4();

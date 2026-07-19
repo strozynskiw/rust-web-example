@@ -1,7 +1,7 @@
 //! Page handlers for the web application.
 
 use axum::{
-    extract::Extension,
+    extract::{Extension, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
 };
@@ -31,7 +31,7 @@ pub async fn index_public(
         ctx.insert("user", &user_view);
     }
 
-    render_page(&tera, "pages/index.html", &ctx).await
+    render_page(&state.tera, "pages/index.html", &ctx).await
 }
 
 /// Helper to render a template with proper error handling.
@@ -46,9 +46,9 @@ async fn render_page(tera: &SharedTera, template: &str, ctx: &Context) -> Respon
 }
 
 /// 404 Not Found handler.
-pub async fn not_found(Extension(tera): Extension<SharedTera>) -> Response {
+pub async fn not_found(State(state): State<AppState>) -> Response {
     let ctx = Context::new();
-    match tera.read().await.render("404.html", &ctx) {
+    match state.tera.read().await.render("404.html", &ctx) {
         Ok(html) => (StatusCode::NOT_FOUND, Html(html)).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
     }
