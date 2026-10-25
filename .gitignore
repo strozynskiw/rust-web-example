@@ -2,7 +2,7 @@
 /target/
 **/*.rs.bk
 *.pdb
-Cargo.lock
+# Application lockfile is committed for reproducible builds.
 
 # Database
 *.db
@@ -12,6 +12,13 @@ Cargo.lock
 # Environment
 .env
 .env.local
+.env.*
+!.env.example
+node_modules/
+playwright-report/
+test-results/
+*.sqlite*
+.bonsai/
 
 # IDE
 .vscode/

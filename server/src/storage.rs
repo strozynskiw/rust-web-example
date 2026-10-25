@@ -4,7 +4,8 @@
 use serde_json::Value;
 use web_template_common::db::DatabasePool;
 
-/// Stores user data as JSON/JSONB in the database.
+/// Replaces a complete JSON document stored as TEXT.
+#[allow(dead_code)]
 pub async fn store_user_data(
     db: &DatabasePool,
     user_id: &str,
@@ -100,13 +101,59 @@ pub async fn set_user_data_key(
     key: &str,
     value: &Value,
 ) -> Result<(), sqlx::Error> {
-    let mut data = load_user_data(db, user_id)
-        .await?
-        .unwrap_or_else(|| serde_json::json!({}));
-
-    data.as_object_mut()
-        .expect("data should be an object")
-        .insert(key.to_string(), value.clone());
-
-    store_user_data(db, user_id, &data).await
+    // Optimistic compare-and-swap: a competing writer causes a fresh read,
+    // never a successful response that silently overwrites another key.
+    for _ in 0..32 {
+        let previous: Option<String> = match db {
+            DatabasePool::Sqlite(pool) => {
+                sqlx::query_scalar("SELECT data FROM user_data WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_optional(pool)
+                    .await?
+            }
+            DatabasePool::Postgres(pool) => {
+                sqlx::query_scalar("SELECT data FROM user_data WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_optional(pool)
+                    .await?
+            }
+        };
+        let mut data = match &previous {
+            Some(raw) => serde_json::from_str::<Value>(raw)
+                .map_err(|e| sqlx::Error::Protocol(e.to_string()))?,
+            None => serde_json::json!({}),
+        };
+        let object = data.as_object_mut().ok_or_else(|| {
+            sqlx::Error::Protocol("Stored user data must be a JSON object".into())
+        })?;
+        object.insert(key.to_owned(), value.clone());
+        let serialized = data.to_string();
+        let sql =
+            "INSERT INTO user_data (user_id, data, updated_at) VALUES ($1, $2, CURRENT_TIMESTAMP)
+            ON CONFLICT (user_id) DO UPDATE SET data = $2, updated_at = CURRENT_TIMESTAMP
+            WHERE user_data.data = $3";
+        let changed = match db {
+            DatabasePool::Sqlite(pool) => sqlx::query(sql)
+                .bind(user_id)
+                .bind(&serialized)
+                .bind(&previous)
+                .execute(pool)
+                .await?
+                .rows_affected(),
+            DatabasePool::Postgres(pool) => sqlx::query(sql)
+                .bind(user_id)
+                .bind(&serialized)
+                .bind(&previous)
+                .execute(pool)
+                .await?
+                .rows_affected(),
+        };
+        if changed == 1 {
+            return Ok(());
+        }
+        tokio::task::yield_now().await;
+    }
+    Err(sqlx::Error::Protocol(
+        "Concurrent update contention; retry the request".into(),
+    ))
 }

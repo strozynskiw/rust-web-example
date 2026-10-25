@@ -30,9 +30,13 @@ mod admin;
 mod api;
 mod auth;
 mod auth_handlers;
+mod error;
 mod middlewares;
+mod security;
 mod site;
 mod storage;
+#[cfg(test)]
+mod tests;
 
 /// Default server port.
 const DEFAULT_SERVER_PORT: u16 = 3000;
@@ -61,12 +65,11 @@ fn setup_tera() -> anyhow::Result<SharedTera> {
 
 /// Initialize the database connection pool and run migrations.
 async fn setup_database() -> anyhow::Result<SharedClient> {
-    let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| {
-            tracing::warn!("DATABASE_URL not set, using default: sqlite:./data.db");
-            "sqlite:./data.db".to_string()
-        });
-    
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        tracing::warn!("DATABASE_URL not set, using default: sqlite:./data.db");
+        "sqlite:./data.db".to_string()
+    });
+
     // Determine database type
     let db_type = if database_url.starts_with("sqlite") {
         "SQLite"
@@ -75,7 +78,7 @@ async fn setup_database() -> anyhow::Result<SharedClient> {
     } else {
         "Unknown"
     };
-    
+
     info!("   Database type: {}", db_type);
     let pool = db::create_pool(&database_url).await?;
     info!("   Connection pool created");
@@ -113,25 +116,28 @@ fn setup_tracing() {
 }
 
 /// Build the application router with all routes and middleware.
-fn build_router(state: AppState) -> Router {
+fn build_router(state: AppState, config: security::SecurityConfig) -> Router {
     // Public routes (no authentication required, but check if user is logged in)
     let public_routes = Router::new()
         .route("/", get(site::index_public))
+        .route("/healthz", get(|| async { "ok" }))
         .route("/login", get(auth_handlers::login_page))
         .route("/register", get(auth_handlers::register_page))
         // Add optional auth middleware to inject user if logged in
         .layer(axum::middleware::from_fn(middlewares::optional_auth));
-    
+
     // Auth action routes (login/logout/register actions)
     let auth_action_routes = Router::new()
         .route("/login", post(auth_handlers::login))
         .route("/register", post(auth_handlers::register))
-        .route("/logout", get(auth_handlers::logout));
-    
+        .layer(axum::middleware::from_fn(security::auth_capacity))
+        .route("/logout", post(auth_handlers::logout));
+
     // HTMX example routes
     let example_routes = Router::new()
-        .route("/api/example/refresh", get(api::example_refresh))
-        .route("/api/example/partial", get(api::example_partial));
+        .route("/api/example/refresh", get(site::index_public))
+        .route("/api/example/partial", get(api::example_partial))
+        .layer(axum::middleware::from_fn(middlewares::optional_auth));
 
     // Protected user routes (authentication required)
     let user_routes = Router::new()
@@ -161,7 +167,7 @@ fn build_router(state: AppState) -> Router {
             ServiceBuilder::new()
                 .layer(SetResponseHeaderLayer::overriding(
                     axum::http::header::CACHE_CONTROL,
-                    HeaderValue::from_static("public, max-age=31536000, immutable"),
+                    HeaderValue::from_static("public, max-age=3600"),
                 ))
                 .service(ServeDir::new("static")),
         )
@@ -173,12 +179,15 @@ fn build_router(state: AppState) -> Router {
         .layer(Extension(state.tera.clone()))
         .with_state(state)
         .layer(CookieManagerLayer::new())
+        .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
+        .layer(axum::middleware::from_fn(security::same_origin))
+        .layer(Extension(config))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Load environment variables first
-    dotenv::dotenv().ok();
+    dotenvy::dotenv().ok();
 
     // Initialize logging early
     setup_tracing();
@@ -190,20 +199,22 @@ async fn main() -> anyhow::Result<()> {
 
     let tera = setup_tera()?;
     let db = setup_database().await?;
+    start_session_maintenance(db.clone()).await?;
     let state = AppState { tera, db };
 
-    let app = build_router(state);
-
     // Start the server
-    let port = std::env::var("PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_SERVER_PORT);
-    let addr = format!("0.0.0.0:{}", port);
-    
+    let port: u16 = std::env::var("PORT")
+        .unwrap_or_else(|_| DEFAULT_SERVER_PORT.to_string())
+        .parse()?;
+    let origin = std::env::var("APP_ORIGIN").unwrap_or_else(|_| format!("http://localhost:{port}"));
+    let config = security::SecurityConfig::new(&origin)?;
+    let app = build_router(state, config);
+    let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    let addr = format!("{host}:{port}");
+
     info!("🌐 Starting HTTP server...");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    
+
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     info!("✨ Server ready and listening on {}", addr);
     info!("📍 Access the application at:");
@@ -214,8 +225,27 @@ async fn main() -> anyhow::Result<()> {
     info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     info!("");
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await?;
 
+    Ok(())
+}
+
+async fn start_session_maintenance(db: SharedClient) -> anyhow::Result<()> {
+    auth::AuthService::cleanup_expired_sessions(&db).await?;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = auth::AuthService::cleanup_expired_sessions(&db).await {
+                tracing::error!(%error, "Session cleanup failed");
+            }
+        }
+    });
     Ok(())
 }
 
@@ -227,10 +257,17 @@ async fn tera_reload_middleware(
     next: Next,
 ) -> Response {
     #[cfg(debug_assertions)]
-    {
-        let mut t = tera.write().await;
-        if let Err(e) = t.full_reload() {
-            tracing::warn!(error = %e, "Failed to reload templates");
+    if !request.uri().path().starts_with("/static/") && request.uri().path() != "/healthz" {
+        let tera = tera.clone();
+        match tokio::task::spawn_blocking(move || {
+            let mut templates = tera.blocking_write();
+            templates.full_reload()
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "Failed to reload templates"),
+            Err(error) => tracing::warn!(%error, "Template reload task failed"),
         }
     }
     next.run(request).await

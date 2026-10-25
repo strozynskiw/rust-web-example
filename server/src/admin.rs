@@ -4,13 +4,14 @@ use axum::{
     Form,
     extract::Extension,
     http::StatusCode,
-    response::{Html, IntoResponse, Response},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::Deserialize;
 use std::error::Error as StdError;
 use tera::Context;
 
 use crate::auth::{AuthService, User, UserRole};
+use crate::error::HttpError;
 use crate::{SharedClient, SharedTera};
 
 /// Admin dashboard handler
@@ -18,10 +19,10 @@ pub async fn admin_dashboard(
     Extension(tera): Extension<SharedTera>,
     Extension(db): Extension<SharedClient>,
     Extension(user): Extension<User>,
-) -> Result<Html<String>, Response> {
+) -> Result<Html<String>, HttpError> {
     let mut context = Context::new();
     context.insert("current_user", &user);
-    
+
     // Add user for header navigation (same data, different key for base template)
     let user_view = serde_json::json!({
         "id": &user.id,
@@ -45,7 +46,9 @@ pub async fn admin_dashboard(
         }
         Err(e) => {
             tracing::error!("Failed to list users: {}", e);
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to load users").into_response());
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, "Failed to load users")
+                .into_response()
+                .into());
         }
     }
 
@@ -63,7 +66,7 @@ pub async fn admin_dashboard(
             }
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Failed to render template: {}", e),
+                "Failed to render template",
             )
                 .into_response()
         })?;
@@ -81,10 +84,17 @@ pub struct UpdateRoleForm {
 /// Update user role handler (admin only)
 pub async fn update_user_role(
     Extension(db): Extension<SharedClient>,
+    Extension(user): Extension<User>,
     Form(form): Form<UpdateRoleForm>,
-) -> Result<Response, Response> {
+) -> Result<Response, HttpError> {
     let role = UserRole::from_str(&form.role)
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid role").into_response())?;
+
+    if form.user_id == user.id {
+        return Err((StatusCode::BAD_REQUEST, "You cannot change your own role")
+            .into_response()
+            .into());
+    }
 
     AuthService::update_user_role(&db, &form.user_id, role)
         .await
@@ -97,7 +107,7 @@ pub async fn update_user_role(
                 .into_response()
         })?;
 
-    Ok((StatusCode::OK, "Role updated successfully").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }
 
 /// Form data for toggling user status
@@ -110,8 +120,16 @@ pub struct ToggleStatusForm {
 /// Toggle user active status handler (admin only)
 pub async fn toggle_user_status(
     Extension(db): Extension<SharedClient>,
+    Extension(user): Extension<User>,
     Form(form): Form<ToggleStatusForm>,
-) -> Result<Response, Response> {
+) -> Result<Response, HttpError> {
+    if form.user_id == user.id {
+        return Err(
+            (StatusCode::BAD_REQUEST, "You cannot change your own status")
+                .into_response()
+                .into(),
+        );
+    }
     AuthService::toggle_user_status(&db, &form.user_id, form.is_active)
         .await
         .map_err(|e| {
@@ -123,5 +141,5 @@ pub async fn toggle_user_status(
                 .into_response()
         })?;
 
-    Ok((StatusCode::OK, "User status updated successfully").into_response())
+    Ok(Redirect::to("/admin").into_response())
 }

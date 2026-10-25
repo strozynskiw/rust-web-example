@@ -18,7 +18,7 @@ pub async fn index_public(
     user: Option<Extension<Option<AuthUser>>>,
 ) -> Response {
     let mut ctx = Context::new();
-    
+
     // Add user to context if logged in
     if let Some(Extension(Some(auth_user))) = user {
         let user_view = json!({

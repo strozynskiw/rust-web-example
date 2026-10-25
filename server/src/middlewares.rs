@@ -9,7 +9,8 @@ use axum::{
 use tower_cookies::Cookies;
 
 use crate::SharedClient;
-use crate::auth::{AuthService, User};
+use crate::auth::{AuthError, AuthService, User};
+use crate::error::HttpError;
 
 /// Cookie name for session ID
 pub const SESSION_COOKIE: &str = "session_id";
@@ -23,7 +24,7 @@ pub async fn require_auth(
     cookies: Cookies,
     mut request: Request,
     next: Next,
-) -> Result<Response, Response> {
+) -> Result<Response, HttpError> {
     let session_id = cookies
         .get(SESSION_COOKIE)
         .map(|cookie| cookie.value().to_string());
@@ -35,22 +36,47 @@ pub async fn require_auth(
                 request.extensions_mut().insert(user);
                 return Ok(next.run(request).await);
             }
+            Err(AuthError::DatabaseError(e)) => {
+                tracing::error!(error = %e, "Session validation unavailable");
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Authentication unavailable",
+                )
+                    .into_response()
+                    .into());
+            }
             Err(_) => {
-                // Invalid or expired session - remove cookie
-                cookies.remove(tower_cookies::Cookie::from(SESSION_COOKIE));
+                cookies.remove(
+                    tower_cookies::Cookie::build(SESSION_COOKIE)
+                        .path("/")
+                        .build(),
+                );
             }
         }
     }
 
-    // Not authenticated - redirect to login
-    Err(Redirect::to("/login").into_response())
+    if request
+        .headers()
+        .get("hx-request")
+        .is_some_and(|h| h == "true")
+    {
+        return Err(([("hx-redirect", "/login")], "Authentication required")
+            .into_response()
+            .into());
+    }
+    if request.uri().path().starts_with("/api/") {
+        return Err((StatusCode::UNAUTHORIZED, "Authentication required")
+            .into_response()
+            .into());
+    }
+    Err(Redirect::to("/login").into_response().into())
 }
 
 /// Middleware that requires admin role
 ///
 /// Must be used after `require_auth` middleware.
 /// Returns 403 Forbidden if user is not an admin.
-pub async fn require_admin(request: Request, next: Next) -> Result<Response, Response> {
+pub async fn require_admin(request: Request, next: Next) -> Result<Response, HttpError> {
     // Get user from extensions (injected by require_auth)
     let user = request
         .extensions()
@@ -60,7 +86,9 @@ pub async fn require_admin(request: Request, next: Next) -> Result<Response, Res
 
     // Check if user is admin
     if !user.is_admin() {
-        return Err((StatusCode::FORBIDDEN, "Admin access required").into_response());
+        return Err((StatusCode::FORBIDDEN, "Admin access required")
+            .into_response()
+            .into());
     }
 
     Ok(next.run(request).await)
@@ -83,9 +111,20 @@ pub async fn optional_auth(
     let user: Option<User> = if let Some(session_id) = session_id {
         match AuthService::validate_session(&db, &session_id).await {
             Ok(user) => Some(user),
+            Err(AuthError::DatabaseError(e)) => {
+                tracing::error!(error = %e, "Session validation unavailable");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Authentication unavailable",
+                )
+                    .into_response();
+            }
             Err(_) => {
-                // Invalid or expired session - remove cookie
-                cookies.remove(tower_cookies::Cookie::from(SESSION_COOKIE));
+                cookies.remove(
+                    tower_cookies::Cookie::build(SESSION_COOKIE)
+                        .path("/")
+                        .build(),
+                );
                 None
             }
         }

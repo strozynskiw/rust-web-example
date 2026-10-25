@@ -2,35 +2,83 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
   pull_request:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-    name: Build & Test
+  rust:
+    name: Rust / SQLite / PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: template_test
+          POSTGRES_PASSWORD: ci-disposable-only
+          POSTGRES_DB: template_test
+        ports: ["127.0.0.1:5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U template_test -d template_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - name: PostgreSQL behavioral contract
+        env:
+          TEST_DATABASE_URL: postgresql://template_test:ci-disposable-only@localhost:5432/template_test
+        run: cargo test --locked --bin web-template postgres_storage_contract -- --ignored
+      - run: cargo build --workspace --release --locked
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  browser:
+    name: Local assets and browser behavior
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
         with:
-          components: rustfmt, clippy
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm audit
+      - run: npm run build
+      - name: Checked-in assets are reproducible
+        run: git diff --exit-code -- static/app.css static/htmx.min.js
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Build
-        run: cargo build --workspace --release
-
-      - name: Test
-        run: cargo test --workspace
+  docker:
+    name: Container build and persistent SQLite smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t web-template:test .
+      - name: Boot, health, non-root and restart persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker volume create template-test-data
+          trap 'docker rm -f template-smoke >/dev/null 2>&1 || true; docker volume rm template-test-data >/dev/null 2>&1 || true' EXIT
+          docker run -d --name template-smoke -p 127.0.0.1:3000:3000 -v template-test-data:/data -e APP_ORIGIN=http://localhost:3000 web-template:test
+          curl --retry 30 --retry-all-errors --retry-delay 1 --fail http://localhost:3000/healthz
+          test "$(docker exec template-smoke id -u)" != "0"
+          curl --fail -c /tmp/template-cookies -H 'Origin: http://localhost:3000' --data 'username=smoke_user&email=smoke%40example.test&password=long-password-123&password_confirm=long-password-123' http://localhost:3000/register
+          docker restart template-smoke
+          curl --retry 30 --retry-all-errors --retry-delay 1 --fail http://localhost:3000/healthz
+          curl --fail -b /tmp/template-cookies http://localhost:3000/profile | grep -q smoke_user

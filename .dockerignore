@@ -9,9 +9,16 @@ target/**/build/
 target/**/examples/
 target/**/incremental/
 
-# Source code (not needed since we're copying the compiled binary)
-server/src/
-common/src/
+# Keep sources for the multi-stage build; exclude secrets and local data.
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite*
+.bonsai/
+node_modules/
+target/
 # Documentation
 *.md
 README*

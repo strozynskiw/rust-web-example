@@ -1,116 +1,51 @@
-//! CLI tool to create users (admin or regular)
-//!
-//! Usage: cargo run --bin create_admin -- <username> <email> <password> [role]
-//!
-//! Role options: 'admin' or 'user' (default: 'admin')
-
+//! Create an administrator (default) or regular user without putting passwords in argv.
+use std::io::{self, BufRead, IsTerminal};
 use web_template_common::db;
 
 #[path = "../auth.rs"]
-#[allow(dead_code)] // This binary only uses a subset of auth functions
+#[allow(dead_code)]
 mod auth;
-
 use auth::{AuthService, UserRole};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    dotenv::dotenv().ok();
-
-    let args: Vec<String> = std::env::args().collect();
-
-    if args.len() < 4 || args.len() > 5 {
-        eprintln!("Usage: {} <username> <email> <password> [role]", args[0]);
-        eprintln!("\nArguments:");
-        eprintln!("  username  - User's username (alphanumeric and underscore)");
-        eprintln!("  email     - User's email address");
-        eprintln!("  password  - User's password (minimum 8 characters)");
-        eprintln!("  role      - Optional: 'admin' or 'user' (default: 'admin')");
-        eprintln!();
-        eprintln!("Examples:");
-        eprintln!("  # Create an admin user:");
-        eprintln!("  cargo run --bin create_admin -- admin admin@example.com SecurePass123");
-        eprintln!();
-        eprintln!("  # Create a regular user:");
-        eprintln!("  cargo run --bin create_admin -- john john@example.com SecurePass123 user");
-        eprintln!();
-        eprintln!("  # Create an admin user (explicit):");
-        eprintln!("  cargo run --bin create_admin -- admin admin@example.com SecurePass123 admin");
-        std::process::exit(1);
-    }
-
-    let username = &args[1];
-    let email = &args[2];
-    let password = &args[3];
-    let role_str = if args.len() == 5 {
-        &args[4]
+    dotenvy::dotenv().ok();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    anyhow::ensure!(
+        (2..=4).contains(&args.len()),
+        "Usage: create_admin <username> <email> [admin|user] [--password-stdin]"
+    );
+    let stdin_password = args.last().is_some_and(|v| v == "--password-stdin");
+    let positional = if stdin_password {
+        &args[..args.len() - 1]
     } else {
-        "admin" // Default to admin for backward compatibility
+        &args[..]
     };
-
-    // Parse role
-    let role = match role_str.to_lowercase().as_str() {
-        "admin" => UserRole::Admin,
-        "user" => UserRole::User,
-        _ => {
-            eprintln!(
-                "Error: Invalid role '{}'. Must be 'admin' or 'user'",
-                role_str
-            );
-            std::process::exit(1);
-        }
+    anyhow::ensure!((2..=3).contains(&positional.len()), "Invalid arguments");
+    let role = UserRole::from_str(positional.get(2).map(String::as_str).unwrap_or("admin"))?;
+    let password = if stdin_password {
+        let mut line = String::new();
+        io::stdin().lock().read_line(&mut line)?;
+        line.trim_end_matches(['\r', '\n']).to_owned()
+    } else {
+        anyhow::ensure!(
+            io::stdin().is_terminal(),
+            "Use --password-stdin for non-interactive input"
+        );
+        let password = rpassword::prompt_password("Password (12–128 characters): ")?;
+        let confirm = rpassword::prompt_password("Confirm password: ")?;
+        anyhow::ensure!(password == confirm, "Passwords do not match");
+        password
     };
-
-    // Validate password strength
-    if password.len() < 8 {
-        eprintln!("Error: Password must be at least 8 characters long");
-        std::process::exit(1);
+    auth::validate_registration(&positional[0], &positional[1], &password)?;
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:./data.db".into());
+    let pool = db::create_pool(&url).await?;
+    match &pool {
+        db::DatabasePool::Sqlite(pool) => sqlx::migrate!("./migrations").run(pool).await?,
+        db::DatabasePool::Postgres(pool) => sqlx::migrate!("./migrations").run(pool).await?,
     }
-
-    // Validate username format
-    if !username.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        eprintln!("Error: Username can only contain letters, numbers, and underscores");
-        std::process::exit(1);
-    }
-
-    // Validate email format (basic)
-    if !email.contains('@') || !email.contains('.') {
-        eprintln!("Error: Invalid email format");
-        std::process::exit(1);
-    }
-
-    println!("Creating {} user...", role_str);
-    println!("  Username: {}", username);
-    println!("  Email: {}", email);
-    println!("  Role: {}", role_str);
-    println!();
-
-    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        println!("⚠️  DATABASE_URL not set, using default: sqlite:./data.db");
-        "sqlite:./data.db".to_string()
-    });
-
-    let pool = db::create_pool(&database_url).await?;
-
-    match AuthService::create_user(&pool, username, email, password, role).await {
-        Ok(user) => {
-            println!("✓ User created successfully!");
-            println!("  User ID: {}", user.id);
-            println!("  Username: {}", user.username);
-            println!("  Email: {}", user.email);
-            println!("  Role: {}", user.role);
-            println!();
-            println!("You can now login at: http://localhost:3000/login");
-        }
-        Err(e) => {
-            eprintln!("✗ Failed to create user: {}", e);
-            if let auth::AuthError::DatabaseError(sqlx::Error::Database(ref db_err)) = e
-                && db_err.message().contains("UNIQUE")
-            {
-                eprintln!("   Hint: Username or email already exists in database");
-            }
-            std::process::exit(1);
-        }
-    }
-
+    let user =
+        AuthService::create_user(&pool, &positional[0], &positional[1], &password, role).await?;
+    println!("Created {} '{}' ({})", user.role, user.username, user.id);
     Ok(())
 }

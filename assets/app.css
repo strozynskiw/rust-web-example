@@ -1,0 +1,15 @@
+@import "tailwindcss" source(none);
+@source "../templates";
+@source "../server/src";
+
+@layer base {
+  :focus-visible { outline: 3px solid theme('colors.blue.600'); outline-offset: 3px; }
+}
+
+.htmx-request { opacity: 0.7; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0s !important;
+    animation: none !important;
+  }
+}

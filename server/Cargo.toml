@@ -8,8 +8,7 @@ axum = "0.8.9"
 tokio = { workspace = true }
 tera = { version = "2", features = ["glob_fs"] }
 sqlx = { workspace = true, features = ["sqlite", "postgres", "any", "uuid"] }
-dotenv = { workspace = true }
-tower = "0.5.3"
+tower = { version = "0.5.3", features = ["util"] }
 tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
 tower-cookies = "0.11.0"
 serde = { workspace = true }
@@ -22,5 +21,5 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 time = "0.3"
 argon2 = { version = "0.5", features = ["std"] }
-rand = "0.8"
-thiserror = "2.0"
+rpassword = "7.5.4"
+dotenvy = "0.15.7"

@@ -1,88 +1,51 @@
-# Quick Start Guide
+# Quick start
 
-Get up and running in 2 steps (SQLite - no setup required!):
-
-## 1. Configure Environment
+Run all commands from the repository root. Install a current stable Rust toolchain.
 
 ```bash
 cp .env.example .env
+cargo run --locked --bin web-template
 ```
 
-The default uses SQLite - no database setup needed!
-
-## 2. Start the Server
+Open **http://localhost:3000**. SQLite is created and migrations run automatically.
+Use **Register** to create a regular account. To create an administrator, open a
+second terminal in the root and run:
 
 ```bash
-cd server
-cargo run
+cargo run --locked --bin create_admin -- admin admin@example.com
 ```
 
-## 3. Open Your Browser
+The CLI asks for a password without echoing it. Passwords require 12–128 characters.
+Do not put passwords in command arguments.
 
-Visit: http://localhost:3000
-
----
-
-## Using PostgreSQL (Optional)
-
-If you prefer PostgreSQL:
-
-### Start Database
+CSS and HTMX are checked in under `static/`, so Node and a CDN are not required to
+run the example. After editing template classes or `assets/app.css`, regenerate:
 
 ```bash
-docker-compose up -d
+npm ci
+npm run build
 ```
 
-### Update Environment
+## PostgreSQL (optional)
 
-Edit `.env` and change:
-```
-DATABASE_URL=postgresql://web-template:web-template@localhost:5432/web-template
-```
+1. Set a unique `POSTGRES_PASSWORD` in `.env`.
+2. Run `docker compose up -d postgres`.
+3. Set `DATABASE_URL` to `postgresql://web-template:YOUR_URL_ENCODED_PASSWORD@localhost:5432/web-template`.
+4. Restart `cargo run --locked --bin web-template` from the root.
 
-### Run Server
-
-```bash
-cd server
-cargo run
-```
-
----
+The Compose database port is accessible only on loopback. Do not expose a database
+with development credentials publicly. `docker compose down` preserves its volume;
+`docker compose down -v` **deletes all database data**.
 
 ## Troubleshooting
 
-### Database Connection Issues
+- **Templates not found:** run from the repository root, not `server/`.
+- **403 on POST:** `APP_ORIGIN` must exactly match the browser origin (scheme, hostname,
+  port, no trailing slash). `localhost` and `127.0.0.1` are different origins.
+- **Port busy:** change both `PORT` and `APP_ORIGIN` in `.env`.
+- **429:** the example limits authentication attempts and concurrent password work;
+  wait for `Retry-After` before retrying.
+- **Database error:** check the URL, permissions and logs; do not delete an existing
+  database or edit already-applied migrations to work around an error.
 
-Check if PostgreSQL is running:
-```bash
-docker-compose ps
-```
-
-View database logs:
-```bash
-docker-compose logs -f postgres
-```
-
-### Port Already in Use
-
-If port 5432 is already in use, update `docker-compose.yml`:
-```yaml
-ports:
-  - "5433:5432"  # Use different port
-```
-
-And update `.env`:
-```
-DATABASE_URL=postgresql://web-template:web-template@localhost:5433/web-template
-```
-
-### Migration Errors
-
-If migrations fail, you can reset the database:
-```bash
-docker-compose down -v
-docker-compose up -d
-```
-
-This will remove all data and recreate the database.
-
+See [README](README.md) for tests, architecture, customization and HTTPS deployment.

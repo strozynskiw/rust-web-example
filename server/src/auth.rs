@@ -7,11 +7,11 @@
 //! - Protection against timing attacks
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, Row};
+use sqlx::FromRow;
 use std::fmt;
 use uuid::Uuid;
 
@@ -112,7 +112,7 @@ impl Session {
     /// Check if session is expired
     #[allow(dead_code)]
     pub fn is_expired(&self) -> bool {
-        self.expires_at < chrono::Utc::now().naive_utc()
+        self.expires_at <= chrono::Utc::now().naive_utc()
     }
 
     /// Get session ID as UUID
@@ -127,6 +127,8 @@ impl Session {
 #[allow(dead_code)]
 pub enum AuthError {
     InvalidCredentials,
+    Busy,
+    InvalidInput(&'static str),
     UserNotFound,
     SessionNotFound,
     UserInactive,
@@ -142,6 +144,8 @@ impl std::fmt::Display for AuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AuthError::InvalidCredentials => write!(f, "Invalid credentials"),
+            AuthError::Busy => write!(f, "Authentication busy; try again shortly"),
+            AuthError::InvalidInput(message) => write!(f, "{message}"),
             AuthError::UserNotFound => write!(f, "User not found"),
             AuthError::SessionNotFound => write!(f, "Session not found or expired"),
             AuthError::UserInactive => write!(f, "User account is inactive"),
@@ -205,6 +209,9 @@ const SESSION_DURATION_HOURS: i64 = 24 * 7; // 7 days
 /// Authentication service for user and session management
 pub struct AuthService;
 
+// The permit lives inside the blocking closure, even if its HTTP request is cancelled.
+static PASSWORD_WORK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
 impl AuthService {
     /// Create a new user with hashed password
     #[allow(dead_code)]
@@ -215,7 +222,15 @@ impl AuthService {
         password: &str,
         role: UserRole,
     ) -> Result<User, AuthError> {
-        let password_hash = PasswordService::hash_password(password)?;
+        validate_registration(username, email, password)?;
+        let password = password.to_owned();
+        let permit = PASSWORD_WORK.try_acquire().map_err(|_| AuthError::Busy)?;
+        let password_hash = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            PasswordService::hash_password(&password)
+        })
+        .await
+        .map_err(|e| AuthError::PasswordHashError(e.to_string()))??;
         let id = Uuid::new_v4().to_string();
         let role_str = role.as_str();
 
@@ -263,10 +278,12 @@ impl AuthService {
         username: &str,
         password: &str,
     ) -> Result<User, AuthError> {
-        // Get user with password hash
-        let (user, password_hash) = match db {
+        if username.len() > 32 || password.len() > 1024 {
+            return Err(AuthError::InvalidCredentials);
+        }
+        let user = match db {
             DatabasePool::Sqlite(pool) => {
-                sqlx::query(
+                sqlx::query_as::<_, User>(
                     r#"
                     SELECT id, username, email, password_hash, role, is_active, 
                            created_at, updated_at, last_login_at
@@ -277,25 +294,9 @@ impl AuthService {
                 .bind(username)
                 .fetch_optional(pool)
                 .await?
-                .map(|row| {
-                    let user = User {
-                        id: row.get("id"),
-                        username: row.get("username"),
-                        email: row.get("email"),
-                        password_hash: String::new(),
-                        role: row.get("role"),
-                        is_active: row.get("is_active"),
-                        created_at: row.get("created_at"),
-                        updated_at: row.get("updated_at"),
-                        last_login_at: row.get("last_login_at"),
-                    };
-                    let hash: String = row.get("password_hash");
-                    (user, hash)
-                })
-                .ok_or(AuthError::UserNotFound)?
             }
             DatabasePool::Postgres(pool) => {
-                sqlx::query(
+                sqlx::query_as::<_, User>(
                     r#"
                     SELECT id, username, email, password_hash, role, is_active, 
                            created_at, updated_at, last_login_at
@@ -306,34 +307,26 @@ impl AuthService {
                 .bind(username)
                 .fetch_optional(pool)
                 .await?
-                .map(|row| {
-                    let user = User {
-                        id: row.get("id"),
-                        username: row.get("username"),
-                        email: row.get("email"),
-                        password_hash: String::new(),
-                        role: row.get("role"),
-                        is_active: row.get("is_active"),
-                        created_at: row.get("created_at"),
-                        updated_at: row.get("updated_at"),
-                        last_login_at: row.get("last_login_at"),
-                    };
-                    let hash: String = row.get("password_hash");
-                    (user, hash)
-                })
-                .ok_or(AuthError::UserNotFound)?
             }
         };
 
-        // Check if user is active
-        if !user.is_active {
-            return Err(AuthError::UserInactive);
-        }
-
-        // Verify password (constant-time comparison)
-        if !PasswordService::verify_password(password, &password_hash)? {
+        let password = password.to_owned();
+        let hash = user.as_ref().map(|u| u.password_hash.clone());
+        let permit = PASSWORD_WORK.try_acquire().map_err(|_| AuthError::Busy)?;
+        let valid = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            match hash {
+                Some(hash) => PasswordService::verify_password(&password, &hash),
+                None => PasswordService::hash_password(&password).map(|_| false),
+            }
+        })
+        .await
+        .map_err(|e| AuthError::PasswordHashError(e.to_string()))??;
+        let mut user = user.ok_or(AuthError::InvalidCredentials)?;
+        if !valid || !user.is_active {
             return Err(AuthError::InvalidCredentials);
         }
+        user.password_hash.clear();
 
         // Update last login time
         Self::update_last_login(db, &user.id).await?;
@@ -344,11 +337,20 @@ impl AuthService {
     /// Create a new session for a user
     pub async fn create_session(db: &SharedClient, user_id: &str) -> Result<Session, AuthError> {
         let session_id = Uuid::new_v4().to_string();
-        let expires_at = chrono::Utc::now().naive_utc()
-            + chrono::Duration::hours(SESSION_DURATION_HOURS);
+        let expires_at =
+            chrono::Utc::now().naive_utc() + chrono::Duration::hours(SESSION_DURATION_HOURS);
 
         match db {
             DatabasePool::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
+                let locked =
+                    sqlx::query("UPDATE users SET id = id WHERE id = $1 AND is_active = TRUE")
+                        .bind(user_id)
+                        .execute(&mut *tx)
+                        .await?;
+                if locked.rows_affected() != 1 {
+                    return Err(AuthError::UserInactive);
+                }
                 sqlx::query(
                     r#"
                     INSERT INTO sessions (id, user_id, expires_at)
@@ -358,10 +360,20 @@ impl AuthService {
                 .bind(&session_id)
                 .bind(user_id)
                 .bind(expires_at)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
+                tx.commit().await?;
             }
             DatabasePool::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                let locked =
+                    sqlx::query("UPDATE users SET id = id WHERE id = $1 AND is_active = TRUE")
+                        .bind(user_id)
+                        .execute(&mut *tx)
+                        .await?;
+                if locked.rows_affected() != 1 {
+                    return Err(AuthError::UserInactive);
+                }
                 sqlx::query(
                     r#"
                     INSERT INTO sessions (id, user_id, expires_at)
@@ -371,8 +383,9 @@ impl AuthService {
                 .bind(&session_id)
                 .bind(user_id)
                 .bind(expires_at)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
+                tx.commit().await?;
             }
         }
 
@@ -393,7 +406,12 @@ impl AuthService {
             return Err(AuthError::SessionNotFound);
         }
 
-        Self::get_user_by_id(db, &session.user_id).await
+        let user = Self::get_user_by_id(db, &session.user_id).await?;
+        if !user.is_active {
+            Self::delete_session(db, session_id).await?;
+            return Err(AuthError::UserInactive);
+        }
+        Ok(user)
     }
 
     /// Get session by ID
@@ -474,13 +492,11 @@ impl AuthService {
         let now = chrono::Utc::now().naive_utc();
 
         let rows_affected = match db {
-            DatabasePool::Sqlite(pool) => {
-                sqlx::query("DELETE FROM sessions WHERE expires_at < $1")
-                    .bind(now)
-                    .execute(pool)
-                    .await?
-                    .rows_affected()
-            }
+            DatabasePool::Sqlite(pool) => sqlx::query("DELETE FROM sessions WHERE expires_at < $1")
+                .bind(now)
+                .execute(pool)
+                .await?
+                .rows_affected(),
             DatabasePool::Postgres(pool) => {
                 sqlx::query("DELETE FROM sessions WHERE expires_at < $1")
                     .bind(now)
@@ -583,18 +599,22 @@ impl AuthService {
 
         match db {
             DatabasePool::Sqlite(pool) => {
-                sqlx::query("UPDATE users SET role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2")
-                    .bind(role_str)
-                    .bind(user_id)
-                    .execute(pool)
-                    .await?;
+                sqlx::query(
+                    "UPDATE users SET role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                )
+                .bind(role_str)
+                .bind(user_id)
+                .execute(pool)
+                .await?;
             }
             DatabasePool::Postgres(pool) => {
-                sqlx::query("UPDATE users SET role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2")
-                    .bind(role_str)
-                    .bind(user_id)
-                    .execute(pool)
-                    .await?;
+                sqlx::query(
+                    "UPDATE users SET role = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                )
+                .bind(role_str)
+                .bind(user_id)
+                .execute(pool)
+                .await?;
             }
         }
 
@@ -609,25 +629,70 @@ impl AuthService {
     ) -> Result<(), AuthError> {
         match db {
             DatabasePool::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
                 sqlx::query(
                     "UPDATE users SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
                 )
                 .bind(is_active)
                 .bind(user_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
+                if !is_active {
+                    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+                        .bind(user_id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                tx.commit().await?;
             }
             DatabasePool::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
                 sqlx::query(
                     "UPDATE users SET is_active = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
                 )
                 .bind(is_active)
                 .bind(user_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await?;
+                if !is_active {
+                    sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+                        .bind(user_id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                tx.commit().await?;
             }
         }
 
         Ok(())
     }
+}
+
+/// Shared by HTTP registration and the administrator CLI.
+pub fn validate_registration(username: &str, email: &str, password: &str) -> Result<(), AuthError> {
+    if !(3..=32).contains(&username.len())
+        || !username
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+    {
+        return Err(AuthError::InvalidInput(
+            "Username must contain 3–32 ASCII letters, digits or underscores",
+        ));
+    }
+    if !(12..=128).contains(&password.chars().count()) || password.len() > 1024 {
+        return Err(AuthError::InvalidInput(
+            "Password must contain 12–128 characters",
+        ));
+    }
+    let valid_email = email.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && !domain.ends_with('.')
+            && !domain.contains('@')
+    });
+    if email.len() > 254 || email.chars().any(char::is_whitespace) || !valid_email {
+        return Err(AuthError::InvalidInput("Provide a valid email address"));
+    }
+    Ok(())
 }

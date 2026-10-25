@@ -1,278 +1,76 @@
-# Authentication & User Management
+# Authentication and authorization
 
-This application includes a comprehensive authentication system with role-based access control.
+See [README](README.md) for setup and deployment. Commands run from the repository root.
 
-## Features
-
-### Security Best Practices
-- **Argon2id Password Hashing**: Industry-standard password hashing algorithm resistant to GPU and side-channel attacks
-- **Constant-Time Comparison**: Protection against timing attacks during password verification
-- **Secure Session Management**: Time-limited sessions with automatic cleanup
-- **HTTP-Only Cookies**: Session cookies are HTTP-only to prevent XSS attacks
-- **Role-Based Access Control**: Separate user and admin roles with middleware protection
-
-### User Roles
-- **User**: Standard user with access to user-specific features
-- **Admin**: Full access including admin panel and user management
-
-## Getting Started
-
-### 1. Run Migrations
-
-Migrations run automatically on server startup. The user management tables will be created:
-- `users`: Stores user accounts with hashed passwords
-- `sessions`: Manages active user sessions
-
-### 2. Create an Admin User
-
-Use the CLI tool to create your first admin user:
+## Create an administrator
 
 ```bash
-cd server
-cargo run --bin create_admin -- admin admin@example.com YourSecurePassword123
+cargo run --locked --bin create_admin -- admin admin@example.com
+# Regular user:
+cargo run --locked --bin create_admin -- editor editor@example.com user
 ```
 
-Example output:
-```
-Creating admin user...
-  Username: admin
-  Email: admin@example.com
+Both server and CLI apply migrations and use the same validation service.
+Passwords are entered via a hidden prompt; automation can explicitly use
+`--password-stdin` with input from a secret manager. Passwords in argv are no longer
+accepted. Usernames require 3–32 ASCII letters/digits/underscores; passwords require
+12–128 characters (at most 1024 UTF-8 bytes); emails have basic syntax and length checks.
+Email ownership is **not verified**.
 
-✓ Admin user created successfully!
-  User ID: 550e8400-e29b-41d4-a716-446655440000
-  Username: admin
-  Email: admin@example.com
-  Role: admin
+## Routes and response contracts
 
-You can now login at: http://localhost:3000/login
-```
+| Route | Access / behavior |
+| --- | --- |
+| `GET /login`, `GET /register` | Public forms; already authenticated users receive an HTTP redirect |
+| `POST /login`, `POST /register` | Exact `Origin` must equal configured `APP_ORIGIN` |
+| `POST /logout` | Same-origin only; deletes the current database session and cookie |
+| `GET /logout` | Method not allowed; never mutates a session |
+| `GET /profile`, `GET /dashboard` | Active account and unexpired session required |
+| `GET/POST /api/user-data` | Same session requirement; data is always scoped to authenticated user ID |
+| `GET /admin`, `POST /admin/users/role`, `POST /admin/users/status` | Current database role must be admin |
 
-### 3. Start the Server
+Unauthenticated page navigation redirects to `/login`. Plain API requests receive
+401; HTMX gets `HX-Redirect: /login`. Authorization failures receive 403. Database
+outages receive 503 instead of silently deleting a valid login cookie.
 
-```bash
-cd server
-cargo run
-```
+Admin actions redirect back to the table after success. The server, not just the
+UI, rejects changing your own role/status. Role changes take effect on the next
+request because roles are not trusted from a cookie. The example has no account
+deletion or password-reset flow.
 
-### 4. Access the Application
+## Security invariants
 
-- **Login Page**: http://localhost:3000/login
-- **Register Page**: http://localhost:3000/register
-- **Admin Panel**: http://localhost:3000/admin (requires admin role)
+- Argon2id hashes use random salts. Hash/verify run off Tokio executor threads.
+  A process-wide semaphore permits four password jobs, retained through job
+  completion even when the initiating request is cancelled.
+- Login and registration share a single-process 30-attempt/minute budget. Exhaustion
+  returns 429 with `Retry-After`. This is a small-site baseline, not distributed or
+  per-user brute-force protection; deploy per-client rate limiting at your proxy.
+- Session IDs are random UUIDv4 values, stored in the database; cookies contain
+  no trusted role or user-supplied identity. The lifetime is seven days.
+- Cookies have `HttpOnly`, `SameSite=Lax`, `Path=/`, and `Secure` when `APP_ORIGIN`
+  uses HTTPS. HTTP is intended only for explicit local development.
+- Deactivation and deletion of all existing sessions are transactional. Session
+  creation locks/checks the active account in the same transaction, preventing a
+  racing login from surviving deactivation and later reactivation. A request
+  already authorized before deactivation may finish.
+- Expiration/activity are checked on every authenticated request. Startup and a
+  periodic maintenance task remove expired sessions from the database.
+- All unsafe HTTP methods require an exact configured `Origin`, including login
+  and registration. Missing, `null`, and foreign origins fail closed. There is no
+  permissive CORS policy and neither Host nor proxy headers determine trusted origin.
+- Templates escape user content. CSP blocks inline script/eval and third-party
+  scripts; HTMX is local with script evaluation disabled. `HttpOnly` alone would
+  not make an XSS harmless.
 
-## Routes
+## Testing
 
-### Public Routes (No Authentication)
-- `GET /` - Home page
-- `GET /login` - Login page
-- `POST /login` - Login handler
-- `GET /register` - Registration page
-- `POST /register` - Registration handler
-- `GET /logout` - Logout handler
+`server/src/tests.rs` exercises real routers, migrations, cookies and templates:
+registration, duplicate conflicts, login/logout, CSRF rejection, XSS escaping,
+role/status changes, revocation, concurrent writes, limits and security headers.
+The PostgreSQL contract is explicit/ignored locally and runs against a disposable
+database in CI. Browser tests cover normal and no-JavaScript forms.
 
-### Protected Routes (Authentication Required)
-- `GET /api/user-data` - Get user data
-- `POST /api/user-data` - Save user data
-
-### Admin Routes (Admin Role Required)
-- `GET /admin` - Admin dashboard
-- `POST /admin/users/role` - Update user role
-- `POST /admin/users/status` - Toggle user active status
-
-## Admin Panel
-
-The admin panel provides:
-
-- **User Statistics**: Total users, active users, admin count
-- **User Management Table**: View all users with their details
-- **Role Management**: Promote users to admin or demote to user
-- **Status Management**: Activate or deactivate user accounts
-- **User Information**: View username, email, role, status, and last login
-
-### Admin Actions
-
-**Promote/Demote Users**:
-- Click "Promote" to upgrade a user to admin
-- Click "Demote" to downgrade an admin to user
-
-**Activate/Deactivate Users**:
-- Click "Deactivate" to disable a user account
-- Click "Activate" to re-enable a user account
-
-Note: You cannot modify your own account from the admin panel.
-
-## API Usage
-
-### Create a User (Programmatically)
-
-```rust
-use web_template::auth::{AuthService, UserRole};
-
-let user = AuthService::create_user(
-    &db,
-    "username",
-    "email@example.com",
-    "password",
-    UserRole::User
-).await?;
-```
-
-### Authenticate a User
-
-```rust
-let user = AuthService::authenticate(&db, "username", "password").await?;
-```
-
-### Create a Session
-
-```rust
-let session = AuthService::create_session(&db, &user.id).await?;
-```
-
-### Validate a Session
-
-```rust
-let user = AuthService::validate_session(&db, &session_id).await?;
-```
-
-## Middleware
-
-### `require_auth`
-Requires authentication. Redirects to `/login` if not authenticated.
-
-```rust
-Router::new()
-    .route("/protected", get(handler))
-    .layer(axum::middleware::from_fn(middlewares::require_auth))
-```
-
-### `require_admin`
-Requires admin role. Returns 403 if user is not an admin. Must be used after `require_auth`.
-
-```rust
-Router::new()
-    .route("/admin", get(admin_handler))
-    .layer(axum::middleware::from_fn(middlewares::require_admin))
-    .layer(axum::middleware::from_fn(middlewares::require_auth))
-```
-
-### `optional_auth`
-Optionally authenticates if session exists, but doesn't redirect if not authenticated.
-
-```rust
-Router::new()
-    .route("/", get(handler))
-    .layer(axum::middleware::from_fn(middlewares::optional_auth))
-```
-
-## Password Requirements
-
-- Minimum 8 characters
-- No maximum length
-- All characters allowed
-
-For production, consider adding:
-- Uppercase/lowercase requirements
-- Number requirements
-- Special character requirements
-- Maximum length limits
-- Password strength meter
-
-## Session Management
-
-- **Session Duration**: 7 days by default
-- **Session Cleanup**: Expired sessions should be cleaned up periodically
-- **Logout**: Deletes the session from database and removes cookie
-
-### Clean Up Expired Sessions
-
-```rust
-let deleted_count = AuthService::cleanup_expired_sessions(&db).await?;
-```
-
-Consider running this periodically (e.g., daily cron job).
-
-## Security Considerations
-
-### Production Checklist
-
-1. **HTTPS**: Enable HTTPS and set `secure` flag on cookies
-2. **CSRF Protection**: Add CSRF tokens for state-changing operations
-3. **Rate Limiting**: Add rate limiting on login/register endpoints
-4. **Email Verification**: Add email verification for new accounts
-5. **Password Reset**: Implement secure password reset flow
-6. **2FA**: Consider adding two-factor authentication
-7. **Audit Logging**: Log security-relevant events
-8. **Session Rotation**: Rotate session IDs after privilege changes
-
-### Current Security Features
-
-✅ Argon2id password hashing  
-✅ Constant-time password comparison  
-✅ HTTP-only session cookies  
-✅ SameSite cookie protection  
-✅ Session expiration  
-✅ Password strength validation  
-✅ Input validation  
-✅ Role-based access control  
-
-### Recommended Improvements for Production
-
-⚠️ Enable HTTPS and secure cookies  
-⚠️ Add CSRF protection  
-⚠️ Implement rate limiting  
-⚠️ Add email verification  
-⚠️ Add password reset functionality  
-⚠️ Consider 2FA  
-⚠️ Add audit logging  
-
-## Database Schema
-
-### Users Table
-
-```sql
-CREATE TABLE users (
-    id TEXT PRIMARY KEY NOT NULL,
-    username TEXT NOT NULL UNIQUE,
-    email TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_login_at TIMESTAMP
-);
-```
-
-### Sessions Table
-
-```sql
-CREATE TABLE sessions (
-    id TEXT PRIMARY KEY NOT NULL,
-    user_id TEXT NOT NULL,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
-```
-
-## Troubleshooting
-
-### "Invalid credentials" error
-- Check username and password are correct
-- Ensure user account is active
-
-### "Session not found or expired" error
-- Session may have expired (7 days)
-- Session may have been deleted (logout)
-- Clear cookies and login again
-
-### Cannot access admin panel
-- Ensure user has admin role
-- Check that user is logged in
-- Verify session is valid
-
-### Database errors
-- Ensure migrations have run
-- Check DATABASE_URL is correct
-- Verify database is accessible
+Before exposing real accounts: use HTTPS, persistent storage and tested backups,
+limit requests at the trusted proxy, decide whether to allow public registration,
+and implement email verification/recovery if your use case requires them.

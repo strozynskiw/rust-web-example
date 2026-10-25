@@ -7,39 +7,29 @@
     <title>{% block title %}web-template{% endblock %}</title>
     
     <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/static/app.css">
     
     <!-- HTMX -->
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="/static/htmx.min.js" defer></script>
+    <script src="/static/app.js" defer></script>
+    <meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"selfRequestsOnly":true,"includeIndicatorStyles":false}'>
     
-    <style>
-        /* HTMX loading states */
-        .htmx-request {
-            opacity: 0.7;
-            pointer-events: none;
-        }
-        
-        /* Smooth transitions */
-        * {
-            transition-property: background-color, border-color, color, fill, stroke, opacity, box-shadow, transform;
-            transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-            transition-duration: 150ms;
-        }
-    </style>
+
     
     {% block head %}{% endblock %}
 </head>
 <body class="min-h-screen bg-gray-50 flex flex-col">
+    <a href="#main-content" class="sr-only focus:not-sr-only focus:p-3">Skip to content</a>
     <!-- Header -->
     <header class="bg-white border-b border-gray-200 sticky top-0 z-50">
         <nav class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between items-center h-16">
+            <div class="flex justify-between items-center min-h-16 flex-wrap gap-3 py-3">
                 <div class="flex items-center">
                     <a href="/" class="text-xl font-bold text-gray-900">
                         web-template
                     </a>
                 </div>
-                <div class="flex items-center space-x-3">
+                <div class="flex items-center flex-wrap gap-3">
                     {% if user %}
                         <!-- Logged in user menu -->
                         <span class="text-sm text-gray-600">
@@ -53,9 +43,9 @@
                             🛡️ Admin
                         </a>
                         {% endif %}
-                        <a href="/logout" class="px-3 py-2 text-sm font-medium text-red-700 bg-red-100 rounded-lg hover:bg-red-200 transition-colors">
-                            Logout
-                        </a>
+                        <form method="post" action="/logout">
+                            <button type="submit" class="px-3 py-2 text-sm font-medium text-red-700 bg-red-100 rounded-lg hover:bg-red-200 transition-colors">Logout</button>
+                        </form>
                     {% else %}
                         <!-- Guest menu -->
                         <a href="/login" class="px-3 py-2 text-sm font-medium text-blue-700 bg-blue-100 rounded-lg hover:bg-blue-200 transition-colors">
@@ -71,7 +61,7 @@
     </header>
 
     <!-- Main Content -->
-    <main class="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main id="main-content" class="flex-1 w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {% block content %}{% endblock %}
     </main>
 
@@ -79,7 +69,7 @@
     <footer class="bg-white border-t border-gray-200 mt-auto">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             <div class="text-center text-sm text-gray-500">
-                <p>© 2025 web-template. Built with Axum, Tera, HTMX, and Tailwind CSS.</p>
+                <p>web-template. Built with Axum, Tera, HTMX, and Tailwind CSS.</p>
             </div>
         </div>
     </footer>

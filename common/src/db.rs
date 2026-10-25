@@ -1,9 +1,9 @@
 use sqlx::{postgres::PgPool, sqlite::SqlitePool};
 use std::time::Duration;
 
-const DB_MAX_CONNECTIONS: u32 = 90;
-const DB_MIN_CONNECTIONS: u32 = 5;
-const DB_TIMEOUT_SECS: u64 = 240;
+const DB_MAX_CONNECTIONS: u32 = 10;
+const DB_MIN_CONNECTIONS: u32 = 1;
+const DB_TIMEOUT_SECS: u64 = 10;
 
 /// Database pool type that can be either SQLite or PostgreSQL
 #[derive(Clone)]
@@ -19,22 +19,18 @@ pub enum DatabasePool {
 /// - `postgresql://` or `postgres://` -> PostgreSQL
 pub async fn create_pool(database_url: &str) -> anyhow::Result<DatabasePool> {
     if database_url.starts_with("sqlite://") || database_url.starts_with("sqlite:") {
-        // SQLite connection - extract the path
-        use sqlx::sqlite::SqlitePoolOptions;
-
-        // Remove sqlite:// or sqlite: prefix to get the path
-        let path = if database_url.starts_with("sqlite://") {
-            database_url
-                .strip_prefix("sqlite://")
-                .unwrap_or(database_url)
-        } else {
-            database_url.strip_prefix("sqlite:").unwrap_or(database_url)
-        };
-
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        // Parse the complete URL (including mode/query options). SQLx otherwise
+        // refuses a missing file, which breaks the documented first run.
+        let options = database_url
+            .parse::<SqliteConnectOptions>()?
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .busy_timeout(Duration::from_secs(DB_TIMEOUT_SECS));
         let pool = SqlitePoolOptions::new()
-            .max_connections(1) // SQLite doesn't support multiple connections well
+            .max_connections(1)
             .acquire_timeout(Duration::from_secs(DB_TIMEOUT_SECS))
-            .connect(&format!("sqlite://{}", path))
+            .connect_with(options)
             .await?;
 
         Ok(DatabasePool::Sqlite(pool))

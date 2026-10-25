@@ -10,18 +10,9 @@ use serde::Deserialize;
 use tera::Context;
 use tracing::error;
 
-use crate::storage;
 use crate::auth::User;
+use crate::storage;
 use crate::{AppState, SharedTera};
-
-/// Example: Full page refresh endpoint
-pub async fn example_refresh(State(state): State<AppState>) -> Response {
-    let mut ctx = Context::new();
-    ctx.insert("timestamp", &chrono::Utc::now().to_rfc3339());
-    ctx.insert("message", "This is a full page refresh example");
-
-    render_template(&state.tera, "partials/example_refresh.html", &ctx).await
-}
 
 /// Example: Partial rendering endpoint
 pub async fn example_partial(
@@ -29,7 +20,9 @@ pub async fn example_partial(
     State(state): State<AppState>,
 ) -> Response {
     let mut ctx = Context::new();
-    ctx.insert("counter", &params.counter.unwrap_or(0));
+    let counter = params.counter.unwrap_or(1).max(0);
+    ctx.insert("counter", &counter);
+    ctx.insert("next_counter", &counter.saturating_add(1));
     ctx.insert(
         "message",
         "This content was loaded via HTMX partial rendering",
@@ -52,14 +45,9 @@ pub async fn get_user_data(
         Ok(Some(data)) => {
             let formatted =
                 serde_json::to_string_pretty(&data).unwrap_or_else(|_| "{}".to_string());
-            let response = format!(
-                r#"<div class="p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                    <p class="text-blue-700 mb-2"><strong>User Data:</strong></p>
-                    <pre class="text-sm text-gray-700 bg-white p-3 rounded border overflow-auto">{}</pre>
-                </div>"#,
-                formatted
-            );
-            Html(response).into_response()
+            let mut ctx = Context::new();
+            ctx.insert("data", &formatted);
+            render_template(&state.tera, "partials/user_data.html", &ctx).await
         }
         Ok(None) => {
             let response = r#"<div class="p-4 bg-gray-50 border border-gray-200 rounded-lg">
@@ -93,6 +81,13 @@ pub async fn save_user_data(
     Extension(user): Extension<User>,
     Form(form): Form<SaveDataForm>,
 ) -> Response {
+    if form.key.trim().is_empty() || form.key.len() > 128 || form.value.len() > 16 * 1024 {
+        return (
+            StatusCode::BAD_REQUEST,
+            "Provide a key (1–128 bytes) and value (up to 16 KiB)",
+        )
+            .into_response();
+    }
     let value_str = form.value.clone();
     let value: serde_json::Value = match serde_json::from_str(&value_str) {
         Ok(v) => v,
@@ -101,13 +96,10 @@ pub async fn save_user_data(
 
     match storage::set_user_data_key(&state.db, &user.id, &form.key, &value).await {
         Ok(_) => {
-            let response = format!(
-                r#"<div class="p-4 bg-green-50 border border-green-200 rounded-lg">
-                    <p class="text-green-700"><strong>Success!</strong> Saved: {} = {}</p>
-                </div>"#,
-                form.key, value_str
-            );
-            Html(response).into_response()
+            let mut ctx = Context::new();
+            ctx.insert("key", &form.key);
+            ctx.insert("value", &value_str);
+            render_template(&state.tera, "partials/user_data.html", &ctx).await
         }
         Err(e) => {
             error!(error = %e, "Failed to save user data");

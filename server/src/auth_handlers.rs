@@ -11,7 +11,9 @@ use tera::Context;
 use tower_cookies::{Cookie, Cookies};
 
 use crate::auth::{AuthService, User, UserRole};
+use crate::error::HttpError;
 use crate::middlewares::SESSION_COOKIE;
+use crate::security::SecurityConfig;
 use crate::{SharedClient, SharedTera};
 
 /// Session duration in seconds (7 days)
@@ -21,18 +23,15 @@ const SESSION_MAX_AGE: i64 = 60 * 60 * 24 * 7;
 pub async fn login_page(
     Extension(tera): Extension<SharedTera>,
     Extension(user): Extension<Option<User>>,
-) -> Result<Html<String>, Response> {
-    // If already logged in, redirect to appropriate page
+) -> Result<Html<String>, HttpError> {
     if let Some(user) = user {
-        if user.is_admin() {
-            return Ok(Html(String::from(
-                r#"<script>window.location.href="/admin";</script>"#,
-            )));
+        return Err(Redirect::to(if user.is_admin() {
+            "/admin"
         } else {
-            return Ok(Html(String::from(
-                r#"<script>window.location.href="/";</script>"#,
-            )));
-        }
+            "/profile"
+        })
+        .into_response()
+        .into());
     }
 
     let context = Context::new();
@@ -62,14 +61,34 @@ pub struct LoginForm {
 /// Login handler
 pub async fn login(
     Extension(db): Extension<SharedClient>,
+    Extension(config): Extension<SecurityConfig>,
     cookies: Cookies,
     Form(form): Form<LoginForm>,
-) -> Result<Response, Response> {
+) -> Result<Response, HttpError> {
     // Authenticate user
     let user = AuthService::authenticate(&db, &form.username, &form.password)
         .await
         .map_err(|e| {
-            tracing::warn!("Login failed for user '{}': {}", form.username, e);
+            if matches!(e, crate::auth::AuthError::Busy) {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "1")],
+                    "Authentication busy; retry shortly",
+                )
+                    .into_response();
+            }
+            if matches!(
+                e,
+                crate::auth::AuthError::DatabaseError(_)
+                    | crate::auth::AuthError::PasswordHashError(_)
+            ) {
+                tracing::error!(error = %e, "Authentication unavailable");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Authentication unavailable",
+                )
+                    .into_response();
+            }
             (StatusCode::UNAUTHORIZED, "Invalid username or password").into_response()
         })?;
 
@@ -90,7 +109,7 @@ pub async fn login(
         .path("/")
         .max_age(time::Duration::seconds(SESSION_MAX_AGE))
         .http_only(true)
-        .secure(false) // Set to true in production with HTTPS
+        .secure(config.secure_cookies)
         .same_site(tower_cookies::cookie::SameSite::Lax)
         .build();
 
@@ -110,7 +129,7 @@ pub async fn login(
 pub async fn logout(
     Extension(db): Extension<SharedClient>,
     cookies: Cookies,
-) -> Result<Response, Response> {
+) -> Result<Response, HttpError> {
     // Get session ID from cookie
     if let Some(session_cookie) = cookies.get(SESSION_COOKIE) {
         let session_id = session_cookie.value();
@@ -118,11 +137,17 @@ pub async fn logout(
         // Delete session from database
         if let Err(e) = AuthService::delete_session(&db, session_id).await {
             tracing::error!("Failed to delete session: {}", e);
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Logout failed; please retry",
+            )
+                .into_response()
+                .into());
         }
     }
 
     // Remove session cookie
-    cookies.remove(tower_cookies::Cookie::from(SESSION_COOKIE));
+    cookies.remove(Cookie::build(SESSION_COOKIE).path("/").build());
 
     tracing::info!("User logged out");
 
@@ -133,12 +158,10 @@ pub async fn logout(
 pub async fn register_page(
     Extension(tera): Extension<SharedTera>,
     Extension(user): Extension<Option<User>>,
-) -> Result<Html<String>, Response> {
+) -> Result<Html<String>, HttpError> {
     // If already logged in, redirect to home
     if user.is_some() {
-        return Ok(Html(String::from(
-            r#"<script>window.location.href="/";</script>"#,
-        )));
+        return Err(Redirect::to("/profile").into_response().into());
     }
 
     let context = Context::new();
@@ -170,40 +193,19 @@ pub struct RegisterForm {
 /// Register handler
 pub async fn register(
     Extension(db): Extension<SharedClient>,
+    Extension(config): Extension<SecurityConfig>,
     cookies: Cookies,
     Form(form): Form<RegisterForm>,
-) -> Result<Response, Response> {
+) -> Result<Response, HttpError> {
     // Validate passwords match
     if form.password != form.password_confirm {
-        return Err((StatusCode::BAD_REQUEST, "Passwords do not match").into_response());
+        return Err((StatusCode::BAD_REQUEST, "Passwords do not match")
+            .into_response()
+            .into());
     }
 
-    // Validate password strength (minimum 8 characters)
-    if form.password.len() < 8 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Password must be at least 8 characters",
-        )
-            .into_response());
-    }
-
-    // Validate username (alphanumeric and underscore only)
-    if !form
-        .username
-        .chars()
-        .all(|c| c.is_alphanumeric() || c == '_')
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "Username can only contain letters, numbers, and underscores",
-        )
-            .into_response());
-    }
-
-    // Validate email format (basic check)
-    if !form.email.contains('@') || !form.email.contains('.') {
-        return Err((StatusCode::BAD_REQUEST, "Invalid email format").into_response());
-    }
+    crate::auth::validate_registration(&form.username, &form.email, &form.password)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()).into_response())?;
 
     // Create user (default role is 'user')
     let user = AuthService::create_user(
@@ -217,8 +219,14 @@ pub async fn register(
     .map_err(|e| {
         tracing::error!("Failed to create user: {}", e);
         match e {
+            crate::auth::AuthError::Busy => (
+                StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", "1")],
+                "Authentication busy; retry shortly",
+            )
+                .into_response(),
             crate::auth::AuthError::DatabaseError(sqlx::Error::Database(db_err)) => {
-                if db_err.message().contains("UNIQUE") {
+                if db_err.is_unique_violation() {
                     (StatusCode::CONFLICT, "Username or email already exists").into_response()
                 } else {
                     (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create user").into_response()
@@ -245,7 +253,7 @@ pub async fn register(
         .path("/")
         .max_age(time::Duration::seconds(SESSION_MAX_AGE))
         .http_only(true)
-        .secure(false) // Set to true in production with HTTPS
+        .secure(config.secure_cookies)
         .same_site(tower_cookies::cookie::SameSite::Lax)
         .build();
 
