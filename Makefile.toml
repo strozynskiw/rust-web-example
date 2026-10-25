@@ -10,6 +10,11 @@ args = ["run", "--locked", "--bin", "web-template"]
 [tasks.dev]
 alias = "run"
 
+[tasks.run-release]
+description = "Run optimized server with startup and HTTP request logs"
+command = "cargo"
+args = ["run", "--release", "--locked", "--bin", "web-template"]
+
 [tasks.build]
 command = "cargo"
 args = ["build", "--workspace", "--locked"]

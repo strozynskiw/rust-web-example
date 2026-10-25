@@ -31,6 +31,7 @@ mod api;
 mod auth;
 mod auth_handlers;
 mod error;
+mod logging;
 mod middlewares;
 mod security;
 mod site;
@@ -101,18 +102,7 @@ async fn setup_database() -> anyhow::Result<SharedClient> {
 
 /// Initialize the tracing subscriber for structured logging.
 fn setup_tracing() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "web_template=info,tower_http=info".into()),
-        )
-        .with_target(false)
-        .with_level(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_file(false)
-        .with_line_number(false)
-        .init();
+    logging::setup();
 }
 
 /// Build the application router with all routes and middleware.
@@ -182,6 +172,7 @@ fn build_router(state: AppState, config: security::SecurityConfig) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(32 * 1024))
         .layer(axum::middleware::from_fn(security::same_origin))
         .layer(Extension(config))
+        .layer(axum::middleware::from_fn(logging::access))
 }
 
 #[tokio::main]
@@ -192,10 +183,14 @@ async fn main() -> anyhow::Result<()> {
     // Initialize logging early
     setup_tracing();
 
-    // Startup banner
-    info!("");
-    info!("🚀 Web Template Server Starting...");
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    let started = std::time::Instant::now();
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    info!(version = env!("CARGO_PKG_VERSION"), %profile, "Starting web-template");
+    info!("Loading templates from templates/ and serving assets from static/");
 
     let tera = setup_tera()?;
     let db = setup_database().await?;
@@ -212,25 +207,40 @@ async fn main() -> anyhow::Result<()> {
     let host = std::env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let addr = format!("{host}:{port}");
 
-    info!("🌐 Starting HTTP server...");
+    info!(bind = %addr, "Binding HTTP listener");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("✨ Server ready and listening on {}", addr);
-    info!("📍 Access the application at:");
-    info!("   • Home: http://localhost:{}", port);
-    info!("   • Login: http://localhost:{}/login", port);
-    info!("   • Register: http://localhost:{}/register", port);
-    info!("   • Admin: http://localhost:{}/admin", port);
-    info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    info!("");
+    let bound = listener.local_addr()?;
+    let local = std::net::SocketAddr::new(
+        if bound.ip().is_unspecified() {
+            if bound.is_ipv4() {
+                std::net::Ipv4Addr::LOCALHOST.into()
+            } else {
+                std::net::Ipv6Addr::LOCALHOST.into()
+            }
+        } else {
+            bound.ip()
+        },
+        bound.port(),
+    );
+    info!(bind = %bound, elapsed_ms = started.elapsed().as_millis(), "Server ready");
+    info!("Local listener: http://{local}");
+    info!("Application URL (APP_ORIGIN): {origin}");
+    info!("Routes: {origin}/login | {origin}/register | {origin}/profile | {origin}/admin");
+    info!("Health: http://{local}/healthz | Press Ctrl+C to stop");
+    if bound.ip().is_unspecified() {
+        info!(
+            "Listening on all interfaces; use APP_ORIGIN for browser requests and form submissions"
+        );
+    }
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
+            info!("Shutdown requested; draining active connections");
         })
         .await?;
 
+    info!("Server stopped");
     Ok(())
 }
 
